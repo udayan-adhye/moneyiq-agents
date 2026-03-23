@@ -1,0 +1,17 @@
+# Secrets - NEVER commit these
+.env
+MY_API_KEYS.txt
+gmail_token*.json
+gmail_credentials.json
+
+# Python
+__pycache__/
+*.pyc
+*.pyo
+
+# Runtime data
+agent_activity.json
+
+# OS files
+.DS_Store
+Thumbs.db
