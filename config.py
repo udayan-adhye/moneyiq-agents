@@ -51,11 +51,13 @@ GMAIL_CREDENTIALS_FILE = "gmail_credentials.json"
 ADVISORS = {
     "udayan": {
         "name": "Udayan Adhye",
-        "email": "udayan@withmoneyiq.com"
+        "email": "udayan@withmoneyiq.com",
+        "phone": "+91 8149128009"
     },
     "rishabh": {
         "name": "Rishabh Mishra",
-        "email": "rishabh.mishra@withmoneyiq.com"
+        "email": "rishabh.mishra@withmoneyiq.com",
+        "phone": "+91 9205736720"
     }
 }
 

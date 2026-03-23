@@ -35,6 +35,13 @@ client = Anthropic(api_key=CLAUDE_API_KEY)
 
 
 def analyze_meeting_with_claude(transcript_text, advisor_name, client_name):
+    # Look up advisor phone for email signatures
+    advisor_phone_for_prompt = ""
+    for adv_info in ADVISORS.values():
+        if adv_info["name"] == advisor_name:
+            advisor_phone_for_prompt = adv_info.get("phone", "")
+            break
+
     # Build CA introduction instruction with real contact details
     # Uses Udayan's exact tone: warm, short, personal, trusting
     ca_instruction = (
@@ -110,6 +117,13 @@ Analyze the following transcript and return a JSON object with these exact keys:
     }},
     "top_strength": "The single most impressive thing the advisor did in this meeting",
     "top_improvement": "The single most impactful thing the advisor could improve for next time",
+    "phrases_to_review": [
+      {{
+        "who_said_it": "Advisor or Client",
+        "original_phrase": "The exact phrase or sentence from the transcript that could have been handled differently",
+        "suggestion": "How this could have been handled better - be specific and constructive. If it was something the client said, explain how the advisor should have responded differently."
+      }}
+    ],
     "coaching_note": "A 2-3 sentence coaching note as if you were a senior wealth management trainer giving feedback to a junior advisor. Be specific, cite moments from the conversation."
   }},
 
@@ -127,7 +141,7 @@ Analyze the following transcript and return a JSON object with these exact keys:
 
   "follow_up_email_subject": "A short, specific email subject line. MUST start with 'Our investment call today' followed by a dash and something specific from the meeting (e.g., 'Our investment call today  - your SIP plan' or 'Our investment call today  - retirement portfolio'). Keep it under 60 characters total.",
 
-  "follow_up_email": "A warm, VALUE-ADDING follow-up email. Do NOT just summarize the meeting  - instead, pick ONE specific topic from the conversation and add genuine value: share a relevant insight, a simple framework, a useful number, or a quick tip that helps the client think about their situation. Then briefly mention next steps. The email should make the client think 'wow, this person really cares and knows their stuff'. Keep it short (under 10 sentences). Sign off as {advisor_name} from MoneyIQ.",
+  "follow_up_email": "A warm, structured follow-up email. Use this EXACT structure:\n\n1. OPENING (2-3 sentences): A warm, personal opening referencing something specific from the conversation. Keep the current natural tone - make the person feel heard and valued.\n\n2. WHAT WE DISCUSSED: A paragraph summarizing the key topics covered in the meeting. Be specific - mention actual numbers, goals, and situations discussed.\n\n3. KEY ACTION POINTS: Bullet points of the main recommendations and action items discussed. Be specific and practical.\n\n4. WHAT I WILL BE SENDING YOU: List what the advisor committed to sending or doing for them.\n\n5. WHAT I WOULD NEED FROM YOU: List what the prospect needs to share or do. IMPORTANT: If at ANY point in the conversation there was a mention of wanting to see/review/consolidate the prospect's mutual funds across PAN cards or folios, or if the prospect needs to share their mutual fund portfolio, ALWAYS include this line: 'Your consolidated mutual fund statement - you can download it here: https://www.camsonline.com/Investors/Statements/Consolidated-Account-Statement'\n\n6. NEXT STEPS: What happens next - follow-up meeting, timeline, etc.\n\nSign off with:\nWarm regards,\n{advisor_name}\nMoneyIQ\n{advisor_phone_for_prompt}\n\nIMPORTANT RULES FOR THIS EMAIL:\n- Use section headers like 'What we discussed:', 'Key action points:', etc. (lowercase, with colon)\n- The opening should feel personal and warm, NOT corporate\n- Be specific throughout - use actual numbers, names, and details from the conversation\n- This email should serve as a complete recap that makes the prospect's life easier\n- Do NOT use the word 'recommendations' - use 'action points' instead\n- NEVER use the word 'client' - these are prospects, not clients yet",
 
   "insurance_type": "If insurance was discussed, what type: term life, health, critical illness, personal accident, or other. Empty string if not discussed.",
   "insurance_details_for_team": "If insurance was discussed, describe any specific details mentioned: family size, existing coverage, budget range, specific concerns. Empty string if not discussed.",
@@ -144,13 +158,16 @@ IMPORTANT RULES:
 - client_pending_items are things the CLIENT needs to do (share documents, fill forms, provide information). These are separate.
 - awaiting_from_client should summarize everything the client owes.
 - For meeting_quality: Use the 6-dimension framework rigorously. Score each dimension 1-10. Be honest and specific  - cite actual moments from the transcript. This is for internal training, not client-facing.
+- For phrases_to_review: ALWAYS provide exactly 2-3 phrases. These should be ACTUAL sentences or close paraphrases from the transcript - things the advisor or client said that represent coaching opportunities. For each phrase, explain specifically how it could have been handled differently. This is the most valuable part of the feedback.
 - For high_value_client: A client is high-value if they mention investing ₹1 lakh+ per month (SIP) OR ₹20 lakhs+ as lumpsum. Look for signals like salary mentions, existing portfolio size, inheritance, business income, or direct investment amount discussions.
-- For the follow_up_email: Do NOT just recap the meeting. Pick ONE topic from the conversation and ADD VALUE  - share a useful insight, framework, number, or tip that helps the client. Then briefly mention next steps. Make the client feel like this person genuinely cares and knows their stuff. Keep it short and warm.
+- For the follow_up_email: Follow the structured format specified above. The email should be a comprehensive but scannable recap. Use section headers. Be specific with numbers and details from the conversation. The CAMS link (https://www.camsonline.com/Investors/Statements/Consolidated-Account-Statement) MUST be included whenever mutual fund consolidation or portfolio sharing was discussed.
 - For the ca_introduction_email: This is a WARM introduction  - both the CA and client are marked (To and CC). Make it feel personal, not robotic. Include both parties' full contact details at the end.
 - All monetary amounts should be in Indian Rupees (numbers, not words).
 - NEVER use the word "advisor" in any client-facing email (follow_up_email, ca_introduction_email). Do not refer to anyone as an "advisor". Use the person's first name instead.
+- NEVER use the word "client" in any email. These are prospects, not clients yet. Use their first name or "them/they" instead.
 - NEVER use the phrase "investment advice" in any email. We do not give investment advice. Use phrases like "financial planning", "your goals", "your plan" instead.
 - NEVER use em dashes in any email text. Use regular dashes (-) or commas instead.
+- NEVER use the word "recommendations" in client-facing emails. Use "action points" instead.
 
 TRANSCRIPT:
 {transcript_text}
@@ -390,10 +407,13 @@ def process_single_meeting(transcript_id):
         print(f"  📧 SAVING DRAFT: Insurance referral for {client_name}")
         print(f"{'─'*60}")
 
+        # Extract first name for natural language
+        client_first_name = client_name.split()[0] if client_name and client_name != "Unknown Client" else client_name
+
         insurance_body = (
             f"Hi team,\n\n"
-            f"One of our clients needs help with insurance. Details below.\n\n"
-            f"Client: {client_name}\n"
+            f"{client_first_name} needs help with {analysis.get('insurance_type', 'insurance').lower()}. Details below.\n\n"
+            f"Name: {client_name}\n"
             f"Email: {client_email or 'Not available'}\n"
             f"WhatsApp: {client_phone_from_crm or 'Not available'}\n\n"
             f"Type of insurance needed: {analysis.get('insurance_type', 'To be discussed')}\n\n"
@@ -407,16 +427,26 @@ def process_single_meeting(transcript_id):
         if ins_reco:
             insurance_body += f"Notes from the call: {ins_reco}\n\n"
 
+        # Get advisor phone for signature
+        advisor_phone = ""
+        for adv_info in ADVISORS.values():
+            if adv_info["name"] == advisor_name:
+                advisor_phone = adv_info.get("phone", "")
+                break
+
         insurance_body += (
             f"Please get in touch with them directly.\n\n"
             f"Thanks,\n"
             f"{advisor_name}\n"
+            f"MoneyIQ\n"
         )
+        if advisor_phone:
+            insurance_body += f"{advisor_phone}\n"
 
         save_draft(
             sender=sender,
             to=INSURANCE_TEAM_EMAIL,
-            subject=f"Insurance Requirement for {client_name}",
+            subject=f"Insurance Requirement - {client_name}",
             body=insurance_body,
             cc=client_email
         )
@@ -471,6 +501,27 @@ def process_single_meeting(transcript_id):
             f"\n{'─'*40}\n"
             f"TOP STRENGTH: {quality.get('top_strength', 'N/A')}\n\n"
             f"TOP IMPROVEMENT: {quality.get('top_improvement', 'N/A')}\n\n"
+        )
+
+        # Add phrases to review section
+        phrases = quality.get("phrases_to_review", [])
+        if phrases:
+            feedback_body += (
+                f"PHRASES TO REVIEW\n"
+                f"{'─'*40}\n"
+            )
+            for i, phrase in enumerate(phrases, 1):
+                who = phrase.get("who_said_it", "Unknown")
+                original = phrase.get("original_phrase", "")
+                suggestion = phrase.get("suggestion", "")
+                feedback_body += (
+                    f"\n{i}. {who} said: \"{original}\"\n"
+                    f"   → {suggestion}\n"
+                )
+            feedback_body += "\n"
+
+        feedback_body += (
+            f"{'─'*40}\n"
             f"COACHING NOTE:\n{quality.get('coaching_note', 'N/A')}\n"
         )
 
