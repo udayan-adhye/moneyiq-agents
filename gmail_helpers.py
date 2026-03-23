@@ -16,6 +16,7 @@ REQUIREMENTS:
 """
 
 import os
+import json
 import base64
 from email.mime.text import MIMEText
 from email.mime.multipart import MIMEMultipart
@@ -27,15 +28,19 @@ from googleapiclient.discovery import build
 
 from config import GMAIL_CREDENTIALS_FILE
 
-# Gmail API scope — needs to send emails and create drafts
+# Gmail API scope - needs to send emails and create drafts
 SCOPES = ["https://www.googleapis.com/auth/gmail.compose"]
 
-# Token files — one per advisor so each sends from their own email
-# Udayan: gmail_token_udayan.json
-# Rishabh: gmail_token_rishabh.json
+# Token files - one per advisor so each sends from their own email
 TOKEN_FILES = {
     "udayan@withmoneyiq.com": "gmail_token_udayan.json",
     "rishabh.mishra@withmoneyiq.com": "gmail_token_rishabh.json",
+}
+
+# Environment variable names for tokens (used on Railway when files don't exist)
+TOKEN_ENV_VARS = {
+    "udayan@withmoneyiq.com": "GMAIL_TOKEN_UDAYAN_JSON",
+    "rishabh.mishra@withmoneyiq.com": "GMAIL_TOKEN_RISHABH_JSON",
 }
 
 # Default token (backward compatibility)
@@ -45,13 +50,46 @@ DEFAULT_TOKEN_FILE = "gmail_token.json"
 _gmail_services = {}
 
 
+def _load_creds_from_env(advisor_email):
+    """Try to load Gmail credentials from environment variables (for Railway)."""
+    env_var = TOKEN_ENV_VARS.get(advisor_email.lower() if advisor_email else "")
+    if not env_var:
+        return None
+
+    token_json = os.environ.get(env_var, "")
+    if not token_json:
+        return None
+
+    try:
+        token_data = json.loads(token_json)
+        creds = Credentials.from_authorized_user_info(token_data, SCOPES)
+        print(f"  Loaded Gmail token from environment variable ({env_var})")
+        return creds
+    except Exception as e:
+        print(f"  Failed to load token from env var {env_var}: {e}")
+        return None
+
+
+def _load_credentials_json_from_env():
+    """Try to load gmail_credentials.json from environment variable."""
+    creds_json = os.environ.get("GMAIL_CREDENTIALS_JSON", "")
+    if not creds_json:
+        return None
+    try:
+        return json.loads(creds_json)
+    except Exception:
+        return None
+
+
 def get_gmail_service(advisor_email=None):
     """
     Connect to Gmail API for a specific advisor.
     Each advisor has their own token file so emails send from their account.
 
-    First time for each advisor: opens a browser window to log in.
-    After that: uses the saved token automatically.
+    Checks in order:
+    1. Cached service (already connected this session)
+    2. Token file on disk (local development)
+    3. Environment variable (Railway deployment)
     """
     # Determine which token file to use
     token_file = DEFAULT_TOKEN_FILE
@@ -64,32 +102,51 @@ def get_gmail_service(advisor_email=None):
 
     creds = None
 
-    # Check if we already have a saved token
+    # Try 1: Load from token file on disk
     if os.path.exists(token_file):
         creds = Credentials.from_authorized_user_file(token_file, SCOPES)
 
-    # If no token or it's expired, re-authorize
+    # Try 2: Load from environment variable (Railway)
+    if not creds:
+        creds = _load_creds_from_env(advisor_email)
+
+    # If no token or it's expired, try to refresh
     if not creds or not creds.valid:
         if creds and creds.expired and creds.refresh_token:
-            creds.refresh(Request())
-        else:
-            if not os.path.exists(GMAIL_CREDENTIALS_FILE):
-                print(f"  ❌ Missing {GMAIL_CREDENTIALS_FILE}")
-                print(f"     Follow GMAIL_SETUP_GUIDE.md to create it.")
+            try:
+                creds.refresh(Request())
+                # Save refreshed token back to file if possible
+                try:
+                    with open(token_file, "w") as f:
+                        f.write(creds.to_json())
+                except (IOError, OSError):
+                    pass  # On Railway, filesystem may be read-only
+            except Exception as e:
+                print(f"  Failed to refresh token: {e}")
                 return None
-
-            flow = InstalledAppFlow.from_client_secrets_file(
-                GMAIL_CREDENTIALS_FILE, SCOPES
-            )
-            creds = flow.run_local_server(port=0)
-
-        # Save the token for next time
-        with open(token_file, "w") as token:
-            token.write(creds.to_json())
+        elif not creds:
+            # No token at all - check if we can do initial auth (local only)
+            if os.path.exists(GMAIL_CREDENTIALS_FILE):
+                flow = InstalledAppFlow.from_client_secrets_file(
+                    GMAIL_CREDENTIALS_FILE, SCOPES
+                )
+                creds = flow.run_local_server(port=0)
+                with open(token_file, "w") as token:
+                    token.write(creds.to_json())
+            else:
+                # Check env var for credentials
+                creds_data = _load_credentials_json_from_env()
+                if creds_data:
+                    print("  Gmail credentials found in env but cannot run OAuth flow on server.")
+                    print("  Please authorize locally first, then set GMAIL_TOKEN env vars.")
+                else:
+                    print(f"  Missing {GMAIL_CREDENTIALS_FILE}")
+                    print(f"     Follow GMAIL_SETUP_GUIDE.md to create it.")
+                return None
 
     service = build("gmail", "v1", credentials=creds)
     _gmail_services[token_file] = service
-    print(f"  ✅ Connected to Gmail ({advisor_email or 'default'})")
+    print(f"  Connected to Gmail ({advisor_email or 'default'})")
     return service
 
 
