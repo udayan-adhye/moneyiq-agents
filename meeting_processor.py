@@ -133,7 +133,8 @@ Analyze the following transcript and return a JSON object with these exact keys:
     "estimated_lumpsum": null or number in rupees,
     "signal": "What in the conversation indicated this is a high-value client? Empty string if not high-value.",
     "client_first_name": "The client's first name only",
-    "client_phone": "Client's phone number if mentioned in the conversation. null if not mentioned."
+    "client_phone": "Client's phone number if mentioned in the conversation. null if not mentioned.",
+    "whatsapp_message": "A short, warm, personalised WhatsApp message from Udayan to this person. Reference something SPECIFIC from their conversation - a goal they mentioned, a concern they raised, or a life event they discussed. The tone should feel like a founder checking in and reinforcing trust in the team member who took the call - NOT a sales pitch or an attempt to take over. NEVER say 'I'd love to chat' or 'Would you have time for a call' - this is about building trust, not pulling them to you. Keep it to 2-3 sentences max. Example tone: 'Hi Amritha, I'm Udayan - Rishabh's colleague at MoneyIQ. He mentioned your conversation about planning for your kids' education and early retirement - those are great goals. Rishabh will take great care of you, and I'm always around if you need anything at all.' If not high-value, return empty string."
   }},
 
   "client_financial_goals": "Brief summary of financial goals discussed",
@@ -389,11 +390,21 @@ def process_single_meeting(transcript_id):
         print(f"  📧 SAVING DRAFT: Follow-up to {client_name}")
         print(f"{'─'*60}")
         follow_up_subject = analysis.get("follow_up_email_subject", f"Our investment call today  - {advisor_name}")
+
+        # CC Udayan on first meeting emails from other advisors
+        udayan_name = ADVISORS["udayan"]["name"]
+        udayan_email_addr = ADVISORS["udayan"]["email"]
+        follow_up_cc = None
+        if new_count == 1 and advisor_name != udayan_name:
+            follow_up_cc = udayan_email_addr
+            print(f"  📋 CC: {udayan_email_addr} (first meeting, team call)")
+
         save_draft(
             sender=sender,
             to=client_email,
             subject=follow_up_subject,
-            body=analysis["follow_up_email"]
+            body=analysis["follow_up_email"],
+            cc=follow_up_cc
         )
     elif analysis.get("follow_up_email"):
         print(f"\n{'─'*60}")
@@ -558,27 +569,30 @@ def process_single_meeting(transcript_id):
         sip_str = f"₹{hv.get('estimated_sip_monthly', 0):,.0f}/month" if hv.get("estimated_sip_monthly") else "Not discussed"
         lumpsum_str = f"₹{hv.get('estimated_lumpsum', 0):,.0f}" if hv.get("estimated_lumpsum") else "Not discussed"
 
-        # Topics discussed (for WhatsApp message)
+        # Topics discussed
         topics = analysis.get("client_financial_goals", "your financial goals")
 
-        # WhatsApp template  - mentions team member by first name
-        advisor_first = advisor_name.split()[0]
-        whatsapp_message = (
-            f"Hi {client_first_name}, this is Udayan from MoneyIQ. "
-            f"I know you spoke to {advisor_first} from my team today and I hope it was helpful. "
-            f"I'd love to help you further with {topics}. "
-            f"Would you have a few minutes for a quick chat?"
-        )
+        # Use Claude's personalised WhatsApp message, fallback to template
+        whatsapp_message = hv.get("whatsapp_message", "")
+        if not whatsapp_message:
+            advisor_first = advisor_name.split()[0]
+            whatsapp_message = (
+                f"Hi {client_first_name}, I'm Udayan - {advisor_first}'s colleague at MoneyIQ. "
+                f"He mentioned your conversation today about {topics} and I just wanted to say you're in great hands. "
+                f"Happy to help in any way - feel free to reach out anytime."
+            )
 
         # WhatsApp link with pre-filled message
+        import urllib.parse
         whatsapp_link_with_msg = ""
         if whatsapp_link:
-            import urllib.parse
             encoded_msg = urllib.parse.quote(whatsapp_message)
             whatsapp_link_with_msg = f"{whatsapp_link}?text={encoded_msg}"
 
         alert_body = (
-            f"Client: {client_name}\n"
+            f"HIGH-VALUE CLIENT ALERT\n"
+            f"{'='*40}\n\n"
+            f"{client_name}\n"
             f"Email: {client_email or 'Not captured'}\n"
             f"WhatsApp: {client_phone or 'Not captured'}\n"
             f"Call taken by: {advisor_name}\n"
@@ -593,19 +607,28 @@ def process_single_meeting(transcript_id):
             f"Financial Goals: {topics}\n\n"
         )
 
+        # WhatsApp one-click section - most prominent
+        alert_body += (
+            f"{'='*40}\n"
+            f"MESSAGE FOR {client_first_name.upper()}\n"
+            f"{'='*40}\n\n"
+            f"{whatsapp_message}\n\n"
+        )
+
         if whatsapp_link_with_msg:
             alert_body += (
-                f"{'─'*40}\n"
-                f"TAP TO MESSAGE ON WHATSAPP\n"
+                f"👉 TAP TO SEND ON WHATSAPP:\n"
                 f"{whatsapp_link_with_msg}\n\n"
-                f"Suggested message:\n"
-                f"\"{whatsapp_message}\"\n\n"
             )
         elif whatsapp_link:
             alert_body += (
-                f"{'─'*40}\n"
-                f"TAP TO OPEN WHATSAPP CHAT\n"
+                f"👉 TAP TO OPEN WHATSAPP:\n"
                 f"{whatsapp_link}\n\n"
+                f"(Copy the message above and paste in chat)\n\n"
+            )
+        else:
+            alert_body += (
+                f"(No phone number captured - copy the message above and send manually)\n\n"
             )
 
         if client_email:
