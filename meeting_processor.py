@@ -134,13 +134,13 @@ Analyze the following transcript and return a JSON object with these exact keys:
     "signal": "What in the conversation indicated this is a high-value client? Empty string if not high-value.",
     "client_first_name": "The client's first name only",
     "client_phone": "Client's phone number if mentioned in the conversation. null if not mentioned.",
-    "whatsapp_message": "A short, warm, personalised WhatsApp message from Udayan to this person. Reference something SPECIFIC from their conversation - a goal they mentioned, a concern they raised, or a life event they discussed. The tone should feel like a founder checking in and reinforcing trust in the team member who took the call - NOT a sales pitch or an attempt to take over. NEVER say 'I'd love to chat' or 'Would you have time for a call' - this is about building trust, not pulling them to you. Keep it to 2-3 sentences max. Example tone: 'Hi Amritha, I'm Udayan - Rishabh's colleague at MoneyIQ. He mentioned your conversation about planning for your kids' education and early retirement - those are great goals. Rishabh will take great care of you, and I'm always around if you need anything at all.' If not high-value, return empty string."
+    "whatsapp_message": "A short, warm, personalised WhatsApp message. MUST start with: 'Hi [client first name], I am Udayan Adhye. I know you spoke to [team member first name] from my office.' Then add 1-2 sentences referencing something SPECIFIC from their conversation - a goal, concern, or life event they discussed. End with something supportive like 'Happy to help in any way' or 'You are in great hands with [team member name]'. NEVER mention 'financial plan', 'wealth plan', or any generic plan language - reference the specific topic instead (retirement goal, children's education, portfolio, SIP, etc). NEVER say 'I'd love to chat' or 'Would you have time for a call'. Keep it to 3 sentences max. Example: 'Hi Amritha, I am Udayan Adhye. I know you spoke to Rishabh from my office about your retirement goals and children's education fund. Happy to help in any way, and I trust Rishabh to take great care of you.' If not high-value, return empty string."
   }},
 
   "client_financial_goals": "Brief summary of financial goals discussed",
   "investment_amount_discussed": null or number in rupees,
 
-  "follow_up_email_subject": "A short, specific email subject line. MUST start with 'Our investment call today' followed by a dash and something specific from the meeting (e.g., 'Our investment call today  - your SIP plan' or 'Our investment call today  - retirement portfolio'). Keep it under 60 characters total.",
+  "follow_up_email_subject": "A short, specific email subject line. MUST start with 'Our investment call today' followed by a dash and something SPECIFIC from the meeting. Use the actual topic discussed - e.g., 'Our investment call today - your SIP and retirement goal', 'Our investment call today - your children's education fund', 'Our investment call today - your portfolio review'. NEVER use generic phrases like 'wealth plan', 'financial plan', 'family wealth'. Keep it under 60 characters total.",
 
   "follow_up_email": "A warm, structured follow-up email. Use this EXACT structure:\n\n1. OPENING (2-3 sentences): A warm, personal opening referencing something specific from the conversation. Keep the current natural tone - make the person feel heard and valued.\n\n2. WHAT WE DISCUSSED: A paragraph summarizing the key topics covered in the meeting. Be specific - mention actual numbers, goals, and situations discussed.\n\n3. KEY ACTION POINTS: Bullet points of the main recommendations and action items discussed. Be specific and practical.\n\n4. WHAT I WILL BE SENDING YOU: List what the advisor committed to sending or doing for them.\n\n5. WHAT I WOULD NEED FROM YOU: List what the prospect needs to share or do. IMPORTANT: If at ANY point in the conversation there was a mention of wanting to see/review/consolidate the prospect's mutual funds across PAN cards or folios, or if the prospect needs to share their mutual fund portfolio, ALWAYS include this line: 'Your consolidated mutual fund statement - you can download it here: https://www.camsonline.com/Investors/Statements/Consolidated-Account-Statement'\n\n6. NEXT STEPS: What happens next - follow-up meeting, timeline, etc.\n\nSign off with:\nWarm regards,\n{advisor_name}\nMoneyIQ\n{advisor_phone_for_prompt}\n\nIMPORTANT RULES FOR THIS EMAIL:\n- Use section headers like 'What we discussed:', 'Key action points:', etc. (lowercase, with colon)\n- The opening should feel personal and warm, NOT corporate\n- Be specific throughout - use actual numbers, names, and details from the conversation\n- This email should serve as a complete recap that makes the prospect's life easier\n- Do NOT use the word 'recommendations' - use 'action points' instead\n- NEVER use the word 'client' - these are prospects, not clients yet",
 
@@ -166,7 +166,8 @@ IMPORTANT RULES:
 - All monetary amounts should be in Indian Rupees (numbers, not words).
 - NEVER use the word "advisor" in any client-facing email (follow_up_email, ca_introduction_email). Do not refer to anyone as an "advisor". Use the person's first name instead.
 - NEVER use the word "client" in any email. These are prospects, not clients yet. Use their first name or "them/they" instead.
-- NEVER use the phrase "investment advice" in any email. We do not give investment advice. Use phrases like "financial planning", "your goals", "your plan" instead.
+- NEVER use the phrase "investment advice" in any email. We do not give investment advice.
+- NEVER use the phrases "financial plan", "wealth plan", "financial planning", "wealth planning", or any variation in email subjects or body text. Instead, be SPECIFIC about what was discussed - use the actual topics like "your retirement goal", "your SIP plan", "your children's education fund", "your portfolio review", "your tax planning", etc. Always reference the specific topic, never generic "plan" language.
 - NEVER use em dashes in any email text. Use regular dashes (-) or commas instead.
 - NEVER use the word "recommendations" in client-facing emails. Use "action points" instead.
 
@@ -277,6 +278,31 @@ def process_single_meeting(transcript_id):
         return
 
     contact_id = contact["id"]
+
+    # Step 4b: Update client_name from Notion if we have a proper name
+    # (Fireflies often returns email addresses instead of names)
+    notion_name = get_contact_field(contact, "Name")
+    if notion_name and "@" not in notion_name and notion_name != "Unknown Client":
+        if client_name != notion_name:
+            print(f"  📛 Name updated: {client_name} → {notion_name}")
+            client_name = notion_name
+    elif "@" in client_name:
+        # If client_name is still an email, try extracting name from transcript title
+        # Fireflies titles are usually like "Amritha Nithin and Udayan Adhye"
+        title = transcript.get("title", "")
+        if title and " and " in title:
+            parts = title.split(" and ")
+            for part in parts:
+                part = part.strip()
+                is_advisor = False
+                for adv_info in ADVISORS.values():
+                    if adv_info["name"].lower() in part.lower():
+                        is_advisor = True
+                        break
+                if not is_advisor and part:
+                    print(f"  📛 Name from title: {client_name} → {part}")
+                    client_name = part
+                    break
 
     # Step 5: Update contact in CRM
     current_count = get_contact_field(contact, "Meeting Count") or 0
@@ -577,9 +603,9 @@ def process_single_meeting(transcript_id):
         if not whatsapp_message:
             advisor_first = advisor_name.split()[0]
             whatsapp_message = (
-                f"Hi {client_first_name}, I'm Udayan - {advisor_first}'s colleague at MoneyIQ. "
-                f"He mentioned your conversation today about {topics} and I just wanted to say you're in great hands. "
-                f"Happy to help in any way - feel free to reach out anytime."
+                f"Hi {client_first_name}, I am Udayan Adhye. "
+                f"I know you spoke to {advisor_first} from my office today. "
+                f"Happy to help in any way, and I trust {advisor_first} to take great care of you."
             )
 
         # WhatsApp link with pre-filled message
