@@ -197,6 +197,29 @@ def get_contacts_by_stage(stage):
 # MEETINGS
 # ══════════════════════════════════════════════
 
+def meeting_already_processed(transcript_id):
+    """Check if a meeting with this Fireflies transcript ID already exists in Notion."""
+    fireflies_url = f"https://app.fireflies.ai/view/{transcript_id}"
+    url = f"{BASE_URL}/databases/{MEETINGS_DB_ID}/query"
+    payload = {
+        "filter": {
+            "property": "Fireflies Link",
+            "url": {
+                "equals": fireflies_url
+            }
+        },
+        "page_size": 1
+    }
+    try:
+        response = requests.post(url, headers=HEADERS, json=payload)
+        if response.status_code == 200:
+            results = response.json().get("results", [])
+            return len(results) > 0
+    except Exception as e:
+        print(f"  ⚠️ Error checking for duplicate meeting: {e}")
+    return False
+
+
 def create_meeting(title, contact_page_id, meeting_date, advisor,
                    meeting_number, fireflies_link=None, summary=None,
                    action_items=None, insurance_flagged=False,

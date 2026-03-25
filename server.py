@@ -18,6 +18,7 @@ from flask import Flask, request, jsonify
 import threading
 import json
 import os
+import time
 from datetime import datetime
 
 from meeting_processor import process_single_meeting, run_meeting_processor
@@ -36,8 +37,52 @@ CRON_SECRET = os.environ.get("CRON_SECRET", "moneyiq-cron-2024")
 # Optional: protect dashboard with a password
 DASHBOARD_PASSWORD = os.environ.get("DASHBOARD_PASSWORD", "")
 
+# Internal scheduler interval (in seconds) - default 15 minutes
+MEETING_CHECK_INTERVAL = int(os.environ.get("MEETING_CHECK_INTERVAL", 900))
+
 # Server start time
 SERVER_START_TIME = datetime.now().isoformat()
+
+
+# ══════════════════════════════════════════════
+# INTERNAL SCHEDULER - checks for new meetings every 15 min
+# ══════════════════════════════════════════════
+
+def meeting_check_loop():
+    """Background thread that checks for new meetings periodically.
+    Runs every 15 minutes (configurable via MEETING_CHECK_INTERVAL env var).
+    This replaces the unreliable Fireflies webhook."""
+    # Wait 60 seconds after server start before first check
+    time.sleep(60)
+    print(f"\n  SCHEDULER: Meeting check loop started (every {MEETING_CHECK_INTERVAL // 60} min)")
+
+    while True:
+        try:
+            print(f"\n{'='*60}")
+            print(f"  SCHEDULER: Checking for new meetings...")
+            print(f"  Time: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}")
+            print(f"{'='*60}")
+            logged_run_meeting_processor(1)
+        except Exception as e:
+            print(f"  SCHEDULER ERROR: {e}")
+            log_agent_error("scheduler", str(e))
+
+        time.sleep(MEETING_CHECK_INTERVAL)
+
+
+def start_internal_scheduler():
+    """Start the background meeting check scheduler."""
+    scheduler_thread = threading.Thread(
+        target=meeting_check_loop,
+        daemon=True,
+        name="meeting-scheduler"
+    )
+    scheduler_thread.start()
+    print(f"  SCHEDULER: Background meeting checker enabled (every {MEETING_CHECK_INTERVAL // 60} min)")
+
+
+# Start the scheduler when the module loads (works with Gunicorn)
+start_internal_scheduler()
 
 
 # ══════════════════════════════════════════════
@@ -619,7 +664,7 @@ def dashboard():
             "meeting_processor": {
                 name: "Meeting Processor",
                 desc: "Analyzes Fireflies transcripts, updates CRM, drafts emails",
-                trigger: "Fireflies webhook",
+                trigger: "Auto - every 15 min",
                 runUrl: "/run"
             },
             "calendly_intake": {

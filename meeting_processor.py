@@ -233,6 +233,12 @@ def process_single_meeting(transcript_id):
     print(f"  Processing transcript: {transcript_id}")
     print(f"{'='*60}")
 
+    # Step 0: Check if already processed (deduplication)
+    from notion_helpers import meeting_already_processed
+    if meeting_already_processed(transcript_id):
+        print(f"  ⏭️  Already processed. Skipping.")
+        return None
+
     # Step 1: Fetch the full transcript
     transcript = get_full_transcript(transcript_id)
     if not transcript:
@@ -288,10 +294,14 @@ def process_single_meeting(transcript_id):
             client_name = notion_name
     elif "@" in client_name:
         # If client_name is still an email, try extracting name from transcript title
-        # Fireflies titles are usually like "Amritha Nithin and Udayan Adhye"
+        # Fireflies titles use various separators: "Name and Name", "Name × Name", "Name - Name"
+        import re
         title = transcript.get("title", "")
-        if title and " and " in title:
-            parts = title.split(" and ")
+        if title:
+            # Split on common separators: " and ", " × ", " x ", " - ", " & "
+            # Also strip prefixes like "Meet – " or "Investment Consultation × "
+            title_clean = re.sub(r'^(Meet\s*[–—-]\s*|Investment\s+Consultation\s*[×x]\s*)', '', title).strip()
+            parts = re.split(r'\s+(?:and|×|x|&|–|—|-)\s+', title_clean, flags=re.IGNORECASE)
             for part in parts:
                 part = part.strip()
                 is_advisor = False
@@ -299,7 +309,7 @@ def process_single_meeting(transcript_id):
                     if adv_info["name"].lower() in part.lower():
                         is_advisor = True
                         break
-                if not is_advisor and part:
+                if not is_advisor and part and "@" not in part:
                     print(f"  📛 Name from title: {client_name} → {part}")
                     client_name = part
                     break
