@@ -214,6 +214,86 @@ def fireflies_webhook():
         return jsonify({"status": "error", "message": str(e)}), 500
 
 
+@app.route("/approve-meeting/<event_id>", methods=["GET"])
+def approve_meeting(event_id):
+    """Advisor clicks this link to approve a pending calendar invite."""
+    advisor_email = request.args.get("advisor", "")
+    print(f"\n  📅 MEETING APPROVAL: {event_id} by {advisor_email}")
+
+    if not advisor_email:
+        return "<h2>Error: Missing advisor email</h2>", 400
+
+    try:
+        from calendar_helpers import approve_and_send_invites
+        success = approve_and_send_invites(advisor_email, event_id)
+
+        if success:
+            log_action("calendar", "meeting_approved", {
+                "event_id": event_id, "advisor": advisor_email
+            })
+            return """
+            <html>
+            <body style="font-family: -apple-system, sans-serif; display: flex; justify-content: center; align-items: center; height: 100vh; margin: 0; background: #f0f2f5;">
+                <div style="text-align: center; padding: 40px; background: white; border-radius: 12px; box-shadow: 0 2px 10px rgba(0,0,0,0.1); max-width: 500px;">
+                    <div style="font-size: 48px; margin-bottom: 16px;">✅</div>
+                    <h2 style="color: #1a7f37; margin-bottom: 8px;">Meeting Approved!</h2>
+                    <p style="color: #666;">Calendar invites have been sent to all attendees.</p>
+                    <p style="color: #999; font-size: 14px; margin-top: 16px;">You can close this tab.</p>
+                </div>
+            </body>
+            </html>
+            """, 200
+        else:
+            return """
+            <html>
+            <body style="font-family: -apple-system, sans-serif; display: flex; justify-content: center; align-items: center; height: 100vh; margin: 0; background: #f0f2f5;">
+                <div style="text-align: center; padding: 40px; background: white; border-radius: 12px; box-shadow: 0 2px 10px rgba(0,0,0,0.1); max-width: 500px;">
+                    <div style="font-size: 48px; margin-bottom: 16px;">⚠️</div>
+                    <h2 style="color: #cf222e;">Could not approve meeting</h2>
+                    <p style="color: #666;">The calendar service may not be connected. Please check your calendar token.</p>
+                </div>
+            </body>
+            </html>
+            """, 500
+    except Exception as e:
+        print(f"  Error approving meeting: {e}")
+        return f"<h2>Error: {e}</h2>", 500
+
+
+@app.route("/reject-meeting/<event_id>", methods=["GET"])
+def reject_meeting(event_id):
+    """Advisor clicks this link to reject/delete a pending calendar invite."""
+    advisor_email = request.args.get("advisor", "")
+    print(f"\n  🗑️ MEETING REJECTED: {event_id} by {advisor_email}")
+
+    if not advisor_email:
+        return "<h2>Error: Missing advisor email</h2>", 400
+
+    try:
+        from calendar_helpers import delete_meeting
+        success = delete_meeting(advisor_email, event_id)
+
+        log_action("calendar", "meeting_rejected", {
+            "event_id": event_id, "advisor": advisor_email
+        })
+
+        return """
+        <html>
+        <body style="font-family: -apple-system, sans-serif; display: flex; justify-content: center; align-items: center; height: 100vh; margin: 0; background: #f0f2f5;">
+            <div style="text-align: center; padding: 40px; background: white; border-radius: 12px; box-shadow: 0 2px 10px rgba(0,0,0,0.1); max-width: 500px;">
+                <div style="font-size: 48px; margin-bottom: 16px;">🗑️</div>
+                <h2 style="color: #666;">Meeting Cancelled</h2>
+                <p style="color: #999;">The pending calendar event has been removed.</p>
+                <p style="color: #999; font-size: 14px; margin-top: 16px;">You can close this tab.</p>
+            </div>
+        </body>
+        </html>
+        """, 200
+    except Exception as e:
+        print(f"  Error rejecting meeting: {e}")
+        return f"<h2>Error: {e}</h2>", 500
+
+
 @app.route("/run", methods=["POST", "GET"])
 def manual_run():
     """Manual trigger - run the meeting processor on demand."""
@@ -677,6 +757,12 @@ def dashboard():
                 name: "Daily Lead Checker",
                 desc: "Flags stale leads, no-shows, overdue tasks",
                 trigger: "Cron - daily 8 AM",
+                runUrl: null
+            },
+            "calendar_agent": {
+                name: "Calendar Agent",
+                desc: "Detects next meeting from transcript, creates pending invite for approval",
+                trigger: "Auto (via Meeting Processor)",
                 runUrl: null
             },
             "call_review": {

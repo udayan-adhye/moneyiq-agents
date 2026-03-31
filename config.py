@@ -79,3 +79,8 @@ FOLLOWUP_INTERVAL_DAYS = [2, 4, 7, 14, 21]
 HIGH_VALUE_SIP_MONTHLY = 100000        # 1 lakh/month SIP
 HIGH_VALUE_LUMPSUM_YEARLY = 2000000    # 20 lakhs lumpsum
 HIGH_VALUE_ALERT_EMAIL = "udayan@withmoneyiq.com"
+
+# -----------------------------------------
+# SERVER URL (for approval links in emails)
+# -----------------------------------------
+SERVER_URL = os.environ.get("SERVER_URL", "https://web-production-9acaee.up.railway.app")

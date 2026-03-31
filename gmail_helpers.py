@@ -244,7 +244,10 @@ def save_draft(sender, to, subject, body, cc=None, advisor_email=None):
 
     service = get_gmail_service(advisor_email)
     if not service:
-        print("  ❌ Cannot save draft — Gmail not connected")
+        print(f"  ❌ Cannot save draft — Gmail not connected for: {advisor_email}")
+        print(f"     → Check if GMAIL_TOKEN env var is set for this advisor on Railway")
+        token_var = TOKEN_ENV_VARS.get(advisor_email.lower(), "UNKNOWN") if advisor_email else "UNKNOWN"
+        print(f"     → Expected env var: {token_var}")
         return None
 
     # Convert plain text body to simple HTML

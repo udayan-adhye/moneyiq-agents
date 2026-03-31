@@ -150,6 +150,15 @@ Analyze the following transcript and return a JSON object with these exact keys:
 
   "ca_introduction_email": "{ca_instruction}",
 
+  "next_meeting": {{
+    "discussed": true/false,
+    "proposed_date": "The specific date mentioned for the next meeting in YYYY-MM-DD format. null if no specific date was discussed. If they said something like 'Thursday' or 'next week', calculate the actual date relative to the meeting date.",
+    "proposed_time": "The time mentioned in HH:MM format (24-hour, IST). null if no specific time was discussed. e.g., '20:00' for 8 PM.",
+    "proposed_duration_minutes": 45,
+    "context": "Brief description of what the next meeting is about. e.g., 'Detailed portfolio review and SIP setup', 'Follow-up with husband to discuss tax planning'. Empty string if not discussed.",
+    "additional_attendees": ["Any additional people mentioned who should join the next meeting that were NOT in this meeting. e.g., 'husband Nitin', 'wife Rishita'. Empty array if none mentioned."]
+  }},
+
   "content_ideas": ["Any interesting questions or topics from this meeting that could make good content for YouTube or social media. 1-3 ideas, or empty array."]
 }}
 
@@ -163,6 +172,7 @@ IMPORTANT RULES:
 - For high_value_client: A client is high-value if they mention investing ₹1 lakh+ per month (SIP) OR ₹20 lakhs+ as lumpsum. Look for signals like salary mentions, existing portfolio size, inheritance, business income, or direct investment amount discussions.
 - For the follow_up_email: Follow the structured format specified above. The email should be a comprehensive but scannable recap. Use section headers. Be specific with numbers and details from the conversation. The CAMS link (https://www.camsonline.com/Investors/Statements/Consolidated-Account-Statement) MUST be included whenever mutual fund consolidation or portfolio sharing was discussed.
 - For the ca_introduction_email: This is a WARM introduction  - both the CA and client are marked (To and CC). Make it feel personal, not robotic. Include both parties' full contact details at the end.
+- For next_meeting: Look carefully for ANY mention of scheduling a follow-up. This includes: "let's meet again on...", "how about Thursday?", "I'll send a calendar invite for...", "next call on 1st April", "let's schedule a follow-up", "we'll connect again next week". Extract the date and time as precisely as possible. If they say "evening" without a specific time, use 20:00 (8 PM IST). If they mention a day like "Thursday" or "1st April", calculate the actual YYYY-MM-DD date.
 - All monetary amounts should be in Indian Rupees (numbers, not words).
 - NEVER use the word "advisor" in any client-facing email (follow_up_email, ca_introduction_email). Do not refer to anyone as an "advisor". Use the person's first name instead.
 - NEVER use the word "client" in any email. These are prospects, not clients yet. Use their first name or "them/they" instead.
@@ -178,7 +188,7 @@ TRANSCRIPT:
     try:
         message = client.messages.create(
             model="claude-sonnet-4-20250514",
-            max_tokens=4000,
+            max_tokens=8000,
             messages=[{"role": "user", "content": prompt}]
         )
         response_text = message.content[0].text
@@ -192,10 +202,23 @@ TRANSCRIPT:
         cleaned = cleaned.strip()
 
         analysis = json.loads(cleaned)
-        print("  ✅ Claude analysis complete")
+
+        # Check if response was truncated (stop_reason != "end_turn" means it hit token limit)
+        stop_reason = message.stop_reason if hasattr(message, "stop_reason") else "unknown"
+        if stop_reason == "max_tokens":
+            print(f"  ⚠️  Claude response was TRUNCATED (hit max_tokens). Some fields may be missing.")
+            print(f"     Missing fields check: content_ideas={'content_ideas' in analysis}, next_meeting={'next_meeting' in analysis}")
+
+        # Log key fields presence for debugging
+        has_content_ideas = bool(analysis.get("content_ideas"))
+        has_follow_up = bool(analysis.get("follow_up_email"))
+        has_next_meeting = bool(analysis.get("next_meeting", {}).get("discussed"))
+        print(f"  ✅ Claude analysis complete (follow_up={has_follow_up}, content_ideas={has_content_ideas}, next_meeting={has_next_meeting})")
         return analysis
     except json.JSONDecodeError as e:
         print(f"  ❌ Failed to parse Claude's response as JSON: {e}")
+        print(f"     Response length: {len(cleaned)} chars")
+        print(f"     Last 200 chars: ...{cleaned[-200:]}")
         return None
     except Exception as e:
         print(f"  ❌ Claude API error: {e}")
@@ -228,12 +251,25 @@ def find_client_in_participants(transcript, advisor_name):
     return "Unknown Client"
 
 
-def process_single_meeting(transcript_id):
+def process_single_meeting(transcript_id, duration_hint=None):
+    """
+    Process a single meeting transcript.
+
+    Args:
+        transcript_id: Fireflies transcript ID
+        duration_hint: Duration in minutes from the transcript list (optional, used for pre-filtering)
+    """
     print(f"\n{'='*60}")
     print(f"  Processing transcript: {transcript_id}")
     print(f"{'='*60}")
 
-    # Step 0: Check if already processed (deduplication)
+    # Step 0a: Quick duration pre-filter (skip missed calls and very short meetings)
+    MIN_MEETING_DURATION_MINUTES = 10
+    if duration_hint is not None and duration_hint < MIN_MEETING_DURATION_MINUTES:
+        print(f"  ⏭️  Skipping — too short ({duration_hint:.0f} min). Likely a missed call or reschedule.")
+        return None
+
+    # Step 0b: Check if already processed (deduplication)
     from notion_helpers import meeting_already_processed
     if meeting_already_processed(transcript_id):
         print(f"  ⏭️  Already processed. Skipping.")
@@ -244,6 +280,18 @@ def process_single_meeting(transcript_id):
     if not transcript:
         print("  ⚠️  Could not fetch transcript. Skipping.")
         return
+
+    # Step 1b: Verify duration from full transcript (in case duration_hint wasn't available)
+    transcript_duration = transcript.get("duration", 0)
+    if transcript_duration and transcript_duration < MIN_MEETING_DURATION_MINUTES:
+        print(f"  ⏭️  Skipping — too short ({transcript_duration:.0f} min). Likely a missed call or reschedule.")
+        return None
+
+    # Step 1c: Check for silent/empty meetings
+    sentences = transcript.get("sentences", [])
+    if len(sentences) < 10:
+        print(f"  ⏭️  Skipping — only {len(sentences)} sentences. Likely a missed call or test meeting.")
+        return None
 
     # Step 2: Determine who's who
     advisor_name = determine_advisor_from_transcript(transcript)
@@ -400,8 +448,11 @@ def process_single_meeting(transcript_id):
         if advisor_info["name"] == advisor_name:
             advisor_email = advisor_info["email"]
             break
-    advisor_email = advisor_email or list(ADVISORS.values())[0]["email"]
+    if not advisor_email:
+        print(f"  ⚠️  Could not match advisor '{advisor_name}' to any configured email. Defaulting to first advisor.")
+        advisor_email = list(ADVISORS.values())[0]["email"]
     sender = f"{advisor_name} <{advisor_email}>"
+    print(f"  📧 Using Gmail account: {advisor_email} (for {advisor_name})")
 
     # Find client email and phone  - prefer Notion (from Calendly) over transcript
     client_email = get_contact_field(contact, "Email") if contact else None
@@ -691,6 +742,106 @@ def process_single_meeting(transcript_id):
         print(f"     SIP: {sip_str} | Lumpsum: {lumpsum_str}")
         print(f"{'─'*60}")
 
+    # --- NEXT MEETING → Create pending calendar invite ---
+    next_meeting = analysis.get("next_meeting", {})
+    if next_meeting and next_meeting.get("discussed") and next_meeting.get("proposed_date"):
+        try:
+            from calendar_helpers import create_pending_meeting
+            from config import SERVER_URL
+
+            nm_date = next_meeting["proposed_date"]
+            nm_time = next_meeting.get("proposed_time") or "20:00"  # default 8 PM IST
+            nm_duration = next_meeting.get("proposed_duration_minutes") or 45
+            nm_context = next_meeting.get("context", "Follow-up discussion")
+
+            # Build start and end datetime strings
+            start_dt = f"{nm_date}T{nm_time}:00"
+            # Calculate end time
+            from datetime import datetime as dt_cls
+            start_obj = dt_cls.strptime(f"{nm_date} {nm_time}", "%Y-%m-%d %H:%M")
+            end_obj = start_obj + timedelta(minutes=nm_duration)
+            end_dt = end_obj.strftime("%Y-%m-%dT%H:%M:%S")
+
+            # Attendees: advisor + client + any additional people mentioned
+            attendee_emails = [advisor_email]
+            if client_email:
+                attendee_emails.append(client_email)
+            # Note: additional attendees from transcript usually don't have emails
+
+            meeting_title = f"MoneyIQ Follow-up - {client_name}"
+
+            result = create_pending_meeting(
+                advisor_email=advisor_email,
+                summary=meeting_title,
+                description=f"Follow-up meeting: {nm_context}\n\nAuto-scheduled by MoneyIQ based on your previous call.",
+                start_datetime=start_dt,
+                end_datetime=end_dt,
+                attendee_emails=attendee_emails,
+            )
+
+            if result:
+                event_id = result["event_id"]
+                meet_link = result.get("meet_link", "")
+                cal_link = result.get("html_link", "")
+
+                # Format date for display
+                display_date = start_obj.strftime("%A, %d %B %Y")
+                display_time = start_obj.strftime("%I:%M %p IST")
+
+                # Build approval email to advisor
+                approve_url = f"{SERVER_URL}/approve-meeting/{event_id}?advisor={advisor_email}"
+                reject_url = f"{SERVER_URL}/reject-meeting/{event_id}?advisor={advisor_email}"
+
+                approval_body = (
+                    f"FOLLOW-UP MEETING SCHEDULED (PENDING YOUR APPROVAL)\n"
+                    f"{'='*50}\n\n"
+                    f"Client: {client_name}\n"
+                    f"Date: {display_date}\n"
+                    f"Time: {display_time}\n"
+                    f"Duration: {nm_duration} minutes\n"
+                    f"Context: {nm_context}\n"
+                )
+
+                if next_meeting.get("additional_attendees"):
+                    additional = ", ".join(next_meeting["additional_attendees"])
+                    approval_body += f"Additional attendees mentioned: {additional}\n"
+
+                if meet_link:
+                    approval_body += f"\nGoogle Meet link: {meet_link}\n"
+
+                approval_body += (
+                    f"\n{'─'*50}\n\n"
+                    f"APPROVE THIS MEETING:\n"
+                    f"{approve_url}\n\n"
+                    f"(Clicking approve will send calendar invites to {client_name} and all attendees)\n\n"
+                    f"REJECT THIS MEETING:\n"
+                    f"{reject_url}\n\n"
+                    f"(Clicking reject will delete the calendar event)\n\n"
+                    f"{'─'*50}\n"
+                    f"You can also edit the event directly in your calendar:\n"
+                    f"{cal_link}\n\n"
+                    f"— MoneyIQ Agent"
+                )
+
+                send_email(
+                    sender=f"MoneyIQ Agent <{advisor_email}>",
+                    to=advisor_email,
+                    subject=f"Approve Meeting: {client_name} - {display_date} at {display_time}",
+                    body=approval_body
+                )
+
+                print(f"\n{'─'*60}")
+                print(f"  📅 NEXT MEETING DETECTED")
+                print(f"     Date: {display_date} at {display_time}")
+                print(f"     Context: {nm_context}")
+                print(f"     Approval email sent to {advisor_name}")
+                print(f"{'─'*60}")
+
+        except Exception as e:
+            print(f"  ⚠️ Calendar invite creation failed: {e}")
+            import traceback
+            traceback.print_exc()
+
     # --- CONTENT IDEAS → Collect and return ---
     content_ideas = []
     if analysis.get("content_ideas"):
@@ -729,7 +880,8 @@ def run_meeting_processor(days_back=1):
     all_content_ideas = []
 
     for t in transcripts:
-        ideas = process_single_meeting(t["id"])
+        duration = t.get("duration", None)
+        ideas = process_single_meeting(t["id"], duration_hint=duration)
         if ideas:
             all_content_ideas.extend(ideas)
 
