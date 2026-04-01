@@ -37,9 +37,9 @@ CRON_SECRET = os.environ.get("CRON_SECRET", "moneyiq-cron-2024")
 # Optional: protect dashboard with a password
 DASHBOARD_PASSWORD = os.environ.get("DASHBOARD_PASSWORD", "")
 
-# Internal scheduler interval (in seconds) - default 30 minutes
+# Internal scheduler interval (in seconds) - default 2 hours
 # Reduced from 15min to avoid Fireflies API rate limits
-MEETING_CHECK_INTERVAL = int(os.environ.get("MEETING_CHECK_INTERVAL", 1800))
+MEETING_CHECK_INTERVAL = int(os.environ.get("MEETING_CHECK_INTERVAL", 7200))
 
 # Server start time
 SERVER_START_TIME = datetime.now().isoformat()
