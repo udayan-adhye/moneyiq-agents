@@ -17,10 +17,22 @@ HEADERS = {
 }
 
 
+def _check_graphql_errors(resp_json):
+    """Check for GraphQL-level errors (Fireflies returns 200 even for rate limits)."""
+    errors = resp_json.get("errors")
+    if errors:
+        err = errors[0]
+        msg = err.get("message", str(err))
+        print(f"  ❌ Fireflies GraphQL error: {msg}")
+        return True
+    return False
+
+
 def get_recent_transcripts(days_back=1):
+    # Use limit to reduce payload size (Fireflies returns newest first)
     query = """
-    query {
-        transcripts {
+    query RecentTranscripts($limit: Int) {
+        transcripts(limit: $limit) {
             id
             title
             date
@@ -30,10 +42,17 @@ def get_recent_transcripts(days_back=1):
         }
     }
     """
-    response = requests.post(FIREFLIES_URL, headers=HEADERS, json={"query": query})
+    response = requests.post(
+        FIREFLIES_URL,
+        headers=HEADERS,
+        json={"query": query, "variables": {"limit": 20}}
+    )
 
     if response.status_code == 200:
-        data = response.json().get("data") or {}
+        resp_json = response.json()
+        if _check_graphql_errors(resp_json):
+            return []
+        data = resp_json.get("data") or {}
         all_transcripts = data.get("transcripts") or []
         recent = []
         for t in all_transcripts:
@@ -84,7 +103,10 @@ def get_full_transcript(transcript_id):
     )
 
     if response.status_code == 200:
-        data = response.json().get("data", {})
+        resp_json = response.json()
+        if _check_graphql_errors(resp_json):
+            return None
+        data = resp_json.get("data", {})
         transcript = data.get("transcript")
         if transcript:
             print(f"  ✅ Fetched transcript: {transcript.get('title', 'Unknown')}")

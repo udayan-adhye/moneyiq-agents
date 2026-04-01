@@ -37,9 +37,10 @@ CRON_SECRET = os.environ.get("CRON_SECRET", "moneyiq-cron-2024")
 # Optional: protect dashboard with a password
 DASHBOARD_PASSWORD = os.environ.get("DASHBOARD_PASSWORD", "")
 
-# Internal scheduler interval (in seconds) - default 2 hours
-# Reduced from 15min to avoid Fireflies API rate limits
-MEETING_CHECK_INTERVAL = int(os.environ.get("MEETING_CHECK_INTERVAL", 7200))
+# Scheduled poll times in IST (24h format) — only check Fireflies at these hours
+# 10:00 AM IST = catch any overnight transcripts before the day starts
+# 8:00 PM IST = catch all daytime meetings after the last usual call
+POLL_HOURS_IST = [int(h) for h in os.environ.get("POLL_HOURS_IST", "10,20").split(",")]
 
 # Server start time
 SERVER_START_TIME = datetime.now().isoformat()
@@ -48,34 +49,45 @@ SERVER_START_TIME = datetime.now().isoformat()
 _processing_lock = threading.Lock()
 
 # ══════════════════════════════════════════════
-# INTERNAL SCHEDULER - checks for new meetings every 15 min
+# INTERNAL SCHEDULER - polls at 10 AM and 8 PM IST only
 # ══════════════════════════════════════════════
 
+def _get_ist_now():
+    """Get current time in IST (UTC+5:30)."""
+    from datetime import timezone
+    ist = timezone(timedelta(hours=5, minutes=30))
+    return datetime.now(ist)
+
 def meeting_check_loop():
-    """Background thread that checks for new meetings periodically.
-    Runs every 15 minutes (configurable via MEETING_CHECK_INTERVAL env var).
-    This replaces the unreliable Fireflies webhook."""
-    # Wait 60 seconds after server start before first check
+    """Background thread that checks for new meetings at scheduled IST times.
+    Polls at 10 AM and 8 PM IST to minimize Fireflies API usage.
+    Webhook handles real-time processing; this is the safety net."""
     time.sleep(60)
-    print(f"\n  SCHEDULER: Meeting check loop started (every {MEETING_CHECK_INTERVAL // 60} min)")
+    print(f"\n  SCHEDULER: Meeting check loop started (poll at {POLL_HOURS_IST} IST)")
+
+    last_poll_date_hour = None  # Track to avoid duplicate polls within same hour
 
     while True:
-        # Use lock to prevent overlapping runs (if previous run took longer than interval)
-        if _processing_lock.locked():
-            print(f"\n  SCHEDULER: Previous run still in progress. Skipping this cycle.")
-        else:
-            with _processing_lock:
-                try:
-                    print(f"\n{'='*60}")
-                    print(f"  SCHEDULER: Checking for new meetings...")
-                    print(f"  Time: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}")
-                    print(f"{'='*60}")
-                    logged_run_meeting_processor(1)
-                except Exception as e:
-                    print(f"  SCHEDULER ERROR: {e}")
-                    log_agent_error("scheduler", str(e))
+        ist_now = _get_ist_now()
+        current_key = (ist_now.date(), ist_now.hour)
 
-        time.sleep(MEETING_CHECK_INTERVAL)
+        if ist_now.hour in POLL_HOURS_IST and current_key != last_poll_date_hour:
+            if _processing_lock.locked():
+                print(f"\n  SCHEDULER: Previous run still in progress. Skipping.")
+            else:
+                with _processing_lock:
+                    try:
+                        print(f"\n{'='*60}")
+                        print(f"  SCHEDULER: Scheduled poll at {ist_now.strftime('%I:%M %p IST')}")
+                        print(f"{'='*60}")
+                        logged_run_meeting_processor(1)
+                        last_poll_date_hour = current_key
+                    except Exception as e:
+                        print(f"  SCHEDULER ERROR: {e}")
+                        log_agent_error("scheduler", str(e))
+
+        # Check every 5 minutes if it's time to poll
+        time.sleep(300)
 
 
 _scheduler_started = False
