@@ -19,7 +19,7 @@ import threading
 import json
 import os
 import time
-from datetime import datetime
+from datetime import datetime, timedelta, timezone
 
 from meeting_processor import process_single_meeting, run_meeting_processor
 from calendly_intake import run_calendly_intake
@@ -54,7 +54,6 @@ _processing_lock = threading.Lock()
 
 def _get_ist_now():
     """Get current time in IST (UTC+5:30)."""
-    from datetime import timezone
     ist = timezone(timedelta(hours=5, minutes=30))
     return datetime.now(ist)
 
