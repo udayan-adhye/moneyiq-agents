@@ -43,6 +43,8 @@ MEETING_CHECK_INTERVAL = int(os.environ.get("MEETING_CHECK_INTERVAL", 900))
 # Server start time
 SERVER_START_TIME = datetime.now().isoformat()
 
+# Lock to prevent overlapping scheduler runs (if a run takes longer than the interval)
+_processing_lock = threading.Lock()
 
 # ══════════════════════════════════════════════
 # INTERNAL SCHEDULER - checks for new meetings every 15 min
@@ -57,21 +59,38 @@ def meeting_check_loop():
     print(f"\n  SCHEDULER: Meeting check loop started (every {MEETING_CHECK_INTERVAL // 60} min)")
 
     while True:
-        try:
-            print(f"\n{'='*60}")
-            print(f"  SCHEDULER: Checking for new meetings...")
-            print(f"  Time: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}")
-            print(f"{'='*60}")
-            logged_run_meeting_processor(1)
-        except Exception as e:
-            print(f"  SCHEDULER ERROR: {e}")
-            log_agent_error("scheduler", str(e))
+        # Use lock to prevent overlapping runs (if previous run took longer than interval)
+        if _processing_lock.locked():
+            print(f"\n  SCHEDULER: Previous run still in progress. Skipping this cycle.")
+        else:
+            with _processing_lock:
+                try:
+                    print(f"\n{'='*60}")
+                    print(f"  SCHEDULER: Checking for new meetings...")
+                    print(f"  Time: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}")
+                    print(f"{'='*60}")
+                    logged_run_meeting_processor(1)
+                except Exception as e:
+                    print(f"  SCHEDULER ERROR: {e}")
+                    log_agent_error("scheduler", str(e))
 
         time.sleep(MEETING_CHECK_INTERVAL)
 
 
+_scheduler_started = False
+_scheduler_lock = threading.Lock()
+
 def start_internal_scheduler():
-    """Start the background meeting check scheduler."""
+    """Start the background meeting check scheduler.
+    Uses a flag + lock to ensure only ONE scheduler runs,
+    even if Gunicorn spawns multiple workers."""
+    global _scheduler_started
+    with _scheduler_lock:
+        if _scheduler_started:
+            print(f"  SCHEDULER: Already running in another thread. Skipping.")
+            return
+        _scheduler_started = True
+
     scheduler_thread = threading.Thread(
         target=meeting_check_loop,
         daemon=True,

@@ -391,7 +391,7 @@ def process_single_meeting(transcript_id, duration_hint=None):
     if "T" in meeting_date_str:
         meeting_date_str = meeting_date_str.split("T")[0]
 
-    create_meeting(
+    meeting_record = create_meeting(
         title=transcript.get("title", f"Meeting with {client_name}"),
         contact_page_id=contact_id,
         meeting_date=meeting_date_str,
@@ -404,6 +404,10 @@ def process_single_meeting(transcript_id, duration_hint=None):
         ca_intro_flagged=analysis.get("ca_introduction_needed", False),
         quality_score=analysis.get("meeting_quality_score")
     )
+
+    if not meeting_record:
+        print(f"  ❌ Notion meeting record failed to create. Stopping here to prevent duplicate drafts on retry.")
+        return None
 
     # Step 7a: Create INTERNAL tasks (for your team)
     for item in analysis.get("action_items", []):
