@@ -33,8 +33,8 @@ def get_recent_transcripts(days_back=1):
     response = requests.post(FIREFLIES_URL, headers=HEADERS, json={"query": query})
 
     if response.status_code == 200:
-        data = response.json().get("data", {})
-        all_transcripts = data.get("transcripts", [])
+        data = response.json().get("data") or {}
+        all_transcripts = data.get("transcripts") or []
         recent = []
         for t in all_transcripts:
             if t.get("date"):
