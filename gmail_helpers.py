@@ -20,6 +20,8 @@ import json
 import base64
 from email.mime.text import MIMEText
 from email.mime.multipart import MIMEMultipart
+from email.mime.base import MIMEBase
+from email import encoders
 
 from google.auth.transport.requests import Request
 from google.oauth2.credentials import Credentials
@@ -224,7 +226,7 @@ def send_email(sender, to, subject, body, cc=None, advisor_email=None):
         return None
 
 
-def save_draft(sender, to, subject, body, cc=None, advisor_email=None):
+def save_draft(sender, to, subject, body, cc=None, advisor_email=None, attachments=None):
     """
     Save an email as a DRAFT (not sent).
     Use this for: client follow-up emails, CA introduction emails.
@@ -236,7 +238,8 @@ def save_draft(sender, to, subject, body, cc=None, advisor_email=None):
         subject:      "Following up on our meeting — Udayan"
         body:         The email body (plain text)
         cc:           Optional CC address
-        advisor_email: Which advisor's Gmail to save draft in (e.g. "rishabh.mishra@withmoneyiq.com")
+        advisor_email: Which advisor's Gmail to save draft in
+        attachments:  Optional list of file paths to attach
     """
     # Extract advisor email from sender if not provided
     if not advisor_email and "<" in sender and ">" in sender:
@@ -253,17 +256,36 @@ def save_draft(sender, to, subject, body, cc=None, advisor_email=None):
     # Convert plain text body to simple HTML
     body_html = body.replace("\n", "<br>")
 
-    message = MIMEMultipart("alternative")
+    # Use mixed multipart if attachments, otherwise alternative
+    if attachments:
+        message = MIMEMultipart("mixed")
+        body_part = MIMEMultipart("alternative")
+        body_part.attach(MIMEText(body, "plain"))
+        body_part.attach(MIMEText(body_html, "html"))
+        message.attach(body_part)
+
+        for filepath in attachments:
+            if os.path.exists(filepath):
+                filename = os.path.basename(filepath)
+                part = MIMEBase("application", "octet-stream")
+                with open(filepath, "rb") as f:
+                    part.set_payload(f.read())
+                encoders.encode_base64(part)
+                part.add_header("Content-Disposition", f'attachment; filename="{filename}"')
+                message.attach(part)
+                print(f"  📎 Attached: {filename}")
+            else:
+                print(f"  ⚠️ Attachment not found: {filepath}")
+    else:
+        message = MIMEMultipart("alternative")
+        message.attach(MIMEText(body, "plain"))
+        message.attach(MIMEText(body_html, "html"))
+
     message["From"] = sender
     message["To"] = to
     message["Subject"] = subject
     if cc:
         message["Cc"] = cc
-
-    part1 = MIMEText(body, "plain")
-    part2 = MIMEText(body_html, "html")
-    message.attach(part1)
-    message.attach(part2)
 
     raw = base64.urlsafe_b64encode(message.as_bytes()).decode("utf-8")
 
