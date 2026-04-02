@@ -109,7 +109,7 @@ def start_internal_scheduler():
         name="meeting-scheduler"
     )
     scheduler_thread.start()
-    print(f"  SCHEDULER: Background meeting checker enabled (every {MEETING_CHECK_INTERVAL // 60} min)")
+    print(f"  SCHEDULER: Background meeting checker enabled (polls at {POLL_HOURS_IST} IST)")
 
 
 # Start the scheduler when the module loads (works with Gunicorn)
