@@ -568,18 +568,37 @@ def process_single_meeting(transcript_id, duration_hint=None):
             cc=client_email
         )
 
-    # --- CA INTRODUCTION → SAVE AS DRAFT ---
-    if analysis.get("ca_introduction_needed") and analysis.get("ca_introduction_email"):
+    # --- CA INTRODUCTION → SAVE AS DRAFT (only if not already introduced) ---
+    ca_already_done = get_contact_field(contact, "CA Introduction Needed") if contact else False
+    if analysis.get("ca_introduction_needed") and analysis.get("ca_introduction_email") and not ca_already_done:
         print(f"\n{'─'*60}")
         print(f"  📧 SAVING DRAFT: CA Introduction for {client_name}")
         print(f"{'─'*60}")
+
+        # Inject client contact details from CRM into the CA intro email
+        ca_email_body = analysis["ca_introduction_email"]
+        if client_email and client_email not in ca_email_body:
+            ca_email_body = ca_email_body.replace(
+                "[client email if known]", client_email
+            )
+        else:
+            ca_email_body = ca_email_body.replace("[client email if known]", "")
+        if client_phone_from_crm and client_phone_from_crm not in ca_email_body:
+            ca_email_body = ca_email_body.replace(
+                "[client phone if known]", client_phone_from_crm
+            )
+        else:
+            ca_email_body = ca_email_body.replace("[client phone if known]", "")
+
         save_draft(
             sender=sender,
             to=CA_CONTACT_EMAIL,
             subject=f"Introduction  - {client_name} (CA consultation needed)",
-            body=analysis["ca_introduction_email"],
+            body=ca_email_body,
             cc=client_email
         )
+    elif analysis.get("ca_introduction_needed") and ca_already_done:
+        print(f"  ⏭️  CA introduction already sent for {client_name}. Skipping duplicate.")
 
     # --- MEETING QUALITY FEEDBACK → AUTO-SEND to advisor ---
     quality = analysis.get("meeting_quality", {})
