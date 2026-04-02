@@ -159,6 +159,14 @@ Analyze the following transcript and return a JSON object with these exact keys:
     "additional_attendees": ["Any additional people mentioned who should join the next meeting that were NOT in this meeting. e.g., 'husband Nitin', 'wife Rishita'. Empty array if none mentioned."]
   }},
 
+  "investment_readiness": {{
+    "ready_to_invest": true/false,
+    "residency_status": "Resident" or "NRI" or "Unknown",
+    "nri_kyc_required": true/false,
+    "client_email": "Client's email if mentioned in the conversation. null if not mentioned.",
+    "signal": "What in the conversation indicated readiness to invest? Empty string if not ready."
+  }},
+
   "content_ideas": ["Any interesting questions or topics from this meeting that could make good content for YouTube or social media. 1-3 ideas, or empty array."]
 }}
 
@@ -173,6 +181,7 @@ IMPORTANT RULES:
 - For the follow_up_email: Follow the structured format specified above. The email should be a comprehensive but scannable recap. Use section headers. Be specific with numbers and details from the conversation. The CAMS link (https://www.camsonline.com/Investors/Statements/Consolidated-Account-Statement) MUST be included whenever mutual fund consolidation or portfolio sharing was discussed.
 - For the ca_introduction_email: This is a WARM introduction  - both the CA and client are marked (To and CC). Make it feel personal, not robotic. Include both parties' full contact details at the end.
 - For next_meeting: Look carefully for ANY mention of scheduling a follow-up. This includes: "let's meet again on...", "how about Thursday?", "I'll send a calendar invite for...", "next call on 1st April", "let's schedule a follow-up", "we'll connect again next week". Extract the date and time as precisely as possible. If they say "evening" without a specific time, use 20:00 (8 PM IST). If they mention a day like "Thursday" or "1st April", calculate the actual YYYY-MM-DD date.
+- For investment_readiness: Look for signals like "I'm ready to start", "let's go ahead with the SIP", "I want to invest", "let's proceed", "send me the form", or the advisor saying "I'll send you the form to fill". Also detect if the person is an NRI — look for mentions of living abroad, NRE/NRO accounts, foreign salary, US/UK/Dubai/Singapore residence, OCI/PIO status, or the advisor asking about residency status. If NRI, check if KYC was mentioned as pending.
 - All monetary amounts should be in Indian Rupees (numbers, not words).
 - NEVER use the word "advisor" in any client-facing email (follow_up_email, ca_introduction_email). Do not refer to anyone as an "advisor". Use the person's first name instead.
 - NEVER use the word "client" in any email. These are prospects, not clients yet. Use their first name or "them/they" instead.
@@ -340,27 +349,33 @@ def process_single_meeting(transcript_id, duration_hint=None):
         if client_name != notion_name:
             print(f"  📛 Name updated: {client_name} → {notion_name}")
             client_name = notion_name
-    elif "@" in client_name:
-        # If client_name is still an email, try extracting name from transcript title
-        # Fireflies titles use various separators: "Name and Name", "Name × Name", "Name - Name"
+    elif "@" in client_name or client_name == "Unknown Client":
+        # If client_name is still an email or unknown, try extracting name from transcript title
         import re
         title = transcript.get("title", "")
         if title:
-            # Split on common separators: " and ", " × ", " x ", " - ", " & "
-            # Also strip prefixes like "Meet – " or "Investment Consultation × "
-            title_clean = re.sub(r'^(Meet\s*[–—-]\s*|Investment\s+Consultation\s*[×x]\s*)', '', title).strip()
-            parts = re.split(r'\s+(?:and|×|x|&|–|—|-)\s+', title_clean, flags=re.IGNORECASE)
+            # Strip prefixes like "Meet – ", "Investment Consultation × "
+            DASH = r'[\-–—\u2013\u2014]'
+            title_clean = re.sub(rf'^Meet\s*{DASH}\s*', '', title).strip()
+            title_clean = re.sub(rf'^Investment\s+Consultation\s*[×x]\s*', '', title_clean).strip()
+            # Strip topic prefixes like "Portfolio discussion - ", "Investment discussion - "
+            title_clean = re.sub(rf'^[\w\s]+(discussion|consultation|review|call)\s*{DASH}\s*', '', title_clean, flags=re.IGNORECASE).strip()
+            # Split on common separators: ", ", " and ", " × ", " x ", " - ", " & "
+            parts = re.split(rf'\s*(?:,|and|×|x|&|{DASH})\s+', title_clean, flags=re.IGNORECASE)
+            client_names = []
             for part in parts:
                 part = part.strip()
                 is_advisor = False
                 for adv_info in ADVISORS.values():
-                    if adv_info["name"].lower() in part.lower():
+                    if adv_info["name"].lower() in part.lower() or adv_info["name"].split()[0].lower() == part.lower():
                         is_advisor = True
                         break
-                if not is_advisor and part and "@" not in part:
-                    print(f"  📛 Name from title: {client_name} → {part}")
-                    client_name = part
-                    break
+                if not is_advisor and part and "@" not in part and len(part) > 1:
+                    client_names.append(part)
+            if client_names:
+                new_name = ", ".join(client_names)
+                print(f"  📛 Name from title: {client_name} → {new_name}")
+                client_name = new_name
 
     # Step 5: Update contact in CRM
     current_count = get_contact_field(contact, "Meeting Count") or 0
@@ -772,7 +787,8 @@ def process_single_meeting(transcript_id, duration_hint=None):
                 attendee_emails.append(client_email)
             # Note: additional attendees from transcript usually don't have emails
 
-            meeting_title = f"MoneyIQ Follow-up - {client_name}"
+            # Title format: "Portfolio Discussion - Client Name, Advisor Name"
+            meeting_title = f"Portfolio Discussion - {client_name}, {advisor_name}"
 
             result = create_pending_meeting(
                 advisor_email=advisor_email,
@@ -845,6 +861,87 @@ def process_single_meeting(transcript_id, duration_hint=None):
             print(f"  ⚠️ Calendar invite creation failed: {e}")
             import traceback
             traceback.print_exc()
+
+    # --- INVESTMENT READINESS → Create onboarding sheet + send draft ---
+    inv = analysis.get("investment_readiness", {})
+    if inv.get("ready_to_invest"):
+        try:
+            onboarding_email_to = client_email or inv.get("client_email")
+            residency = inv.get("residency_status", "Unknown")
+            is_nri = residency == "NRI"
+
+            if onboarding_email_to:
+                OPS_EMAIL = "ops@withmoneyiq.com"
+
+                # Create a per-client copy of the onboarding sheet
+                from sheets_helpers import create_client_onboarding_sheet
+                sheet_result = create_client_onboarding_sheet(
+                    client_name=client_name,
+                    client_email=onboarding_email_to,
+                    advisor_email=advisor_email,
+                    ops_email=OPS_EMAIL
+                )
+
+                sheet_line = ""
+                if sheet_result:
+                    sheet_line = (
+                        f"I have shared a Google Sheet with you that has all the fields we need. "
+                        f"Please fill it in directly:\n"
+                        f"{sheet_result['sheet_url']}\n"
+                    )
+                else:
+                    sheet_line = "I will share the information form with you separately.\n"
+
+                client_first = client_name.split()[0] if client_name else "there"
+                body = (
+                    f"Hi {client_first},\n\n"
+                    f"Great speaking with you today! As discussed, sharing what we need to get started.\n\n"
+                    f"{sheet_line}"
+                )
+
+                if is_nri:
+                    body += (
+                        f"\nSince you are based outside India, we would also need the following:\n"
+                        f"  - A cancelled cheque (NRE/NRO account)\n"
+                    )
+                    if inv.get("nri_kyc_required"):
+                        body += (
+                            f"  - NRI KYC documents (we will share the detailed list separately)\n"
+                        )
+
+                body += (
+                    f"\nIf you have any questions while filling this out, feel free to reach out.\n\n"
+                    f"Warm regards,\n"
+                    f"{advisor_name}\n"
+                    f"MoneyIQ"
+                )
+
+                subject = "Getting started - Information form"
+                if is_nri:
+                    subject = "Getting started - Information form + NRI documents needed"
+
+                save_draft(
+                    sender=f"{advisor_name} <{advisor_email}>",
+                    to=onboarding_email_to,
+                    subject=subject,
+                    body=body,
+                    cc=OPS_EMAIL,
+                    advisor_email=advisor_email
+                )
+
+                print(f"\n{'─'*60}")
+                print(f"  📋 INVESTMENT READINESS DETECTED ({residency})")
+                print(f"     Onboarding sheet created for {client_name}")
+                print(f"     Draft saved → {onboarding_email_to} (CC: {OPS_EMAIL})")
+                if is_nri:
+                    print(f"     NRI docs requested: cancelled cheque" +
+                          (" + KYC" if inv.get("nri_kyc_required") else ""))
+                print(f"{'─'*60}")
+            else:
+                print(f"  ⚠️ Investment readiness detected but no client email found")
+
+        except Exception as e:
+            print(f"  ⚠️ Investment onboarding email failed: {e}")
 
     # --- CONTENT IDEAS → Collect and return ---
     content_ideas = []
