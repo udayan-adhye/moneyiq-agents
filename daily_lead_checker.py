@@ -166,6 +166,7 @@ def check_stale_leads(days_threshold=None):
         days_threshold = DAYS_BEFORE_REMINDER
 
     cutoff_date = (date.today() - timedelta(days=days_threshold)).isoformat()
+    nudge_cooldown = (date.today() - timedelta(days=days_threshold)).isoformat()
     stale_leads = []
 
     contacts = get_all_active_contacts()
@@ -176,6 +177,11 @@ def check_stale_leads(days_threshold=None):
 
         # Skip contacts with no last contact date (brand new)
         if not last_contact:
+            continue
+
+        # Skip if already nudged within the cooldown period
+        last_nudge = get_contact_field(contact, "Last Nudge Date")
+        if last_nudge and last_nudge >= nudge_cooldown:
             continue
 
         # If last contact was before the cutoff, it's stale
@@ -212,6 +218,7 @@ def check_booked_no_meeting(days_threshold=3):
     Possible no-show or needs rescheduling.
     """
     contacts = get_contacts_by_stage("Discovery Call Booked")
+    nudge_cooldown = (date.today() - timedelta(days=days_threshold)).isoformat()
     no_show = []
 
     for contact in contacts:
@@ -219,6 +226,11 @@ def check_booked_no_meeting(days_threshold=3):
         name = get_contact_field(contact, "Name")
 
         if not booking_date:
+            continue
+
+        # Skip if already nudged recently
+        last_nudge = get_contact_field(contact, "Last Nudge Date")
+        if last_nudge and last_nudge >= nudge_cooldown:
             continue
 
         days_since = (date.today() - date.fromisoformat(booking_date)).days
@@ -408,6 +420,8 @@ def run_daily_lead_checker():
                     subject=f"Quick check-in  - {advisor_name}",
                     body=email_body
                 )
+                # Mark as nudged to prevent duplicate drafts
+                update_contact(lead["id"], {"Last Nudge Date": date.today().isoformat()})
                 drafts_saved += 1
 
     # Draft nudge emails for no-shows
@@ -430,6 +444,8 @@ def run_daily_lead_checker():
                     subject=f"Missed our call? Happy to reschedule  - {advisor_name}",
                     body=email_body
                 )
+                # Mark as nudged to prevent duplicate drafts
+                update_contact(lead["id"], {"Last Nudge Date": date.today().isoformat()})
                 drafts_saved += 1
 
     print(f"\n  📧 Saved {drafts_saved} draft email(s)")

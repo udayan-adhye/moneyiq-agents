@@ -112,7 +112,8 @@ def update_contact(contact_page_id, updates):
 
     # Fields that are DATE type
     DATE_FIELDS = [
-        "Last Meeting Date", "Last Contact Date", "Created Date", "Booking Date"
+        "Last Meeting Date", "Last Contact Date", "Created Date", "Booking Date",
+        "Last Nudge Date"
     ]
 
     # Fields that are RICH_TEXT type
