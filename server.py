@@ -14,17 +14,19 @@ REQUIREMENTS:
   pip3 install flask requests anthropic
 """
 
-from flask import Flask, request, jsonify
+from flask import Flask, request, jsonify, Response
 import threading
 import json
 import os
 import time
+import base64
 from datetime import datetime, timedelta, timezone
 
 from meeting_processor import process_single_meeting, run_meeting_processor
 from calendly_intake import run_calendly_intake
 from daily_lead_checker import run_daily_lead_checker
 from advisor_call_review import run_call_review
+from meeting_prep import run_meeting_prep
 from activity_log import (
     log_agent_start, log_agent_complete, log_agent_error,
     log_action, get_dashboard_data
@@ -42,6 +44,9 @@ DASHBOARD_PASSWORD = os.environ.get("DASHBOARD_PASSWORD", "")
 # 8:00 PM IST = catch all daytime meetings after the last usual call
 POLL_HOURS_IST = [int(h) for h in os.environ.get("POLL_HOURS_IST", "10,20").split(",")]
 
+# Hour (IST) to run the meeting prep agent each morning
+MEETING_PREP_HOUR_IST = int(os.environ.get("MEETING_PREP_HOUR_IST", 7))
+
 # Server start time
 SERVER_START_TIME = datetime.now().isoformat()
 
@@ -58,18 +63,21 @@ def _get_ist_now():
     return datetime.now(ist)
 
 def meeting_check_loop():
-    """Background thread that checks for new meetings at scheduled IST times.
-    Polls at 10 AM and 8 PM IST to minimize Fireflies API usage.
-    Webhook handles real-time processing; this is the safety net."""
+    """Background thread that runs scheduled tasks at IST times.
+    - Fireflies polling at 10 AM and 8 PM IST
+    - Meeting prep agent at 7 AM IST
+    Webhook handles real-time meeting processing; polling is the safety net."""
     time.sleep(60)
-    print(f"\n  SCHEDULER: Meeting check loop started (poll at {POLL_HOURS_IST} IST)")
+    print(f"\n  SCHEDULER: Loop started (Fireflies poll {POLL_HOURS_IST} IST, prep {MEETING_PREP_HOUR_IST} IST)")
 
-    last_poll_date_hour = None  # Track to avoid duplicate polls within same hour
+    last_poll_date_hour = None
+    last_prep_date = None
 
     while True:
         ist_now = _get_ist_now()
         current_key = (ist_now.date(), ist_now.hour)
 
+        # Fireflies polling
         if ist_now.hour in POLL_HOURS_IST and current_key != last_poll_date_hour:
             if _processing_lock.locked():
                 print(f"\n  SCHEDULER: Previous run still in progress. Skipping.")
@@ -77,7 +85,7 @@ def meeting_check_loop():
                 with _processing_lock:
                     try:
                         print(f"\n{'='*60}")
-                        print(f"  SCHEDULER: Scheduled poll at {ist_now.strftime('%I:%M %p IST')}")
+                        print(f"  SCHEDULER: Fireflies poll at {ist_now.strftime('%I:%M %p IST')}")
                         print(f"{'='*60}")
                         logged_run_meeting_processor(1)
                         last_poll_date_hour = current_key
@@ -85,7 +93,19 @@ def meeting_check_loop():
                         print(f"  SCHEDULER ERROR: {e}")
                         log_agent_error("scheduler", str(e))
 
-        # Check every 5 minutes if it's time to poll
+        # Meeting prep at 7 AM IST (once per day)
+        if ist_now.hour == MEETING_PREP_HOUR_IST and last_prep_date != ist_now.date():
+            try:
+                print(f"\n{'='*60}")
+                print(f"  SCHEDULER: Meeting prep at {ist_now.strftime('%I:%M %p IST')}")
+                print(f"{'='*60}")
+                logged_run_meeting_prep()
+                last_prep_date = ist_now.date()
+            except Exception as e:
+                print(f"  SCHEDULER ERROR (prep): {e}")
+                log_agent_error("meeting_prep", str(e))
+
+        # Check every 5 minutes if it's time to run anything
         time.sleep(300)
 
 
@@ -167,6 +187,18 @@ def logged_run_daily_lead_checker():
     try:
         run_daily_lead_checker()
         log_agent_complete(agent, {})
+    except Exception as e:
+        log_agent_error(agent, str(e))
+        raise
+
+
+def logged_run_meeting_prep():
+    """Wrap run_meeting_prep with activity logging."""
+    agent = "meeting_prep"
+    log_agent_start(agent)
+    try:
+        count = run_meeting_prep()
+        log_agent_complete(agent, {"prep_docs": count})
     except Exception as e:
         log_agent_error(agent, str(e))
         raise
@@ -375,6 +407,18 @@ def cron_daily_lead_checker():
     thread = threading.Thread(target=logged_run_daily_lead_checker)
     thread.start()
     return jsonify({"status": "processing", "agent": "daily_lead_checker"})
+
+
+@app.route("/cron/meeting-prep", methods=["GET", "POST"])
+def cron_meeting_prep():
+    """Scheduled: Generate morning meeting prep docs for today's meetings."""
+    if not check_cron_auth():
+        return jsonify({"error": "Unauthorized"}), 401
+
+    print(f"\n  CRON: Meeting prep")
+    thread = threading.Thread(target=logged_run_meeting_prep)
+    thread.start()
+    return jsonify({"status": "processing", "agent": "meeting_prep"})
 
 
 @app.route("/cron/call-review", methods=["GET", "POST"])
@@ -1024,6 +1068,526 @@ def dashboard():
 </body>
 </html>"""
     return html
+
+
+# ══════════════════════════════════════════════
+# FOLLOW-UP SYSTEM - Dashboard, Tracking Pixel, Daily Scheduler
+# ══════════════════════════════════════════════
+
+from followup_manager import (
+    process_due_followups, get_dashboard_followups,
+    mark_as_sent, mark_email_opened, get_followup_field,
+    update_followup_status, send_whatsapp_message
+)
+from config import ADVISORS as ADVISOR_CONFIG
+
+# 1x1 transparent PNG pixel (for email open tracking)
+TRACKING_PIXEL = base64.b64decode(
+    "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mNk+M9QDwADhgGAWjR9awAAAABJRU5ErkJggg=="
+)
+
+
+@app.route("/track/open/<page_id>.png", methods=["GET"])
+def tracking_pixel(page_id):
+    """Serve a 1x1 transparent PNG and mark the follow-up email as opened."""
+    try:
+        mark_email_opened(page_id)
+        print(f"  📬 Email opened — follow-up {page_id[:8]}...")
+    except Exception as e:
+        print(f"  ⚠️ Tracking pixel error: {e}")
+
+    return Response(TRACKING_PIXEL, mimetype="image/png", headers={
+        "Cache-Control": "no-store, no-cache, must-revalidate, max-age=0",
+        "Pragma": "no-cache"
+    })
+
+
+@app.route("/followups/send/<page_id>", methods=["POST", "GET"])
+def followup_send(page_id):
+    """Mark a follow-up as sent (advisor clicked Send on dashboard)."""
+    try:
+        mark_as_sent(page_id)
+        return jsonify({"status": "sent", "page_id": page_id})
+    except Exception as e:
+        return jsonify({"status": "error", "message": str(e)}), 500
+
+
+@app.route("/followups/skip/<page_id>", methods=["POST", "GET"])
+def followup_skip(page_id):
+    """Skip a follow-up touchpoint."""
+    reason = request.args.get("reason", "Manually skipped by advisor")
+    try:
+        update_followup_status(page_id, "Skipped", skip_reason=reason)
+        return jsonify({"status": "skipped", "page_id": page_id})
+    except Exception as e:
+        return jsonify({"status": "error", "message": str(e)}), 500
+
+
+@app.route("/cron/process-followups", methods=["GET", "POST"])
+def cron_process_followups():
+    """Scheduled: Process due follow-ups (run daily at 9 AM IST)."""
+    if not check_cron_auth():
+        return jsonify({"error": "Unauthorized"}), 401
+
+    print(f"\n  CRON: Processing due follow-ups")
+    thread = threading.Thread(target=_logged_process_followups)
+    thread.start()
+    return jsonify({"status": "processing", "agent": "followup_manager"})
+
+
+def _logged_process_followups():
+    """Wrap process_due_followups with logging."""
+    log_agent_start("followup_manager")
+    try:
+        process_due_followups()
+        log_agent_complete("followup_manager", {})
+    except Exception as e:
+        log_agent_error("followup_manager", str(e))
+
+
+@app.route("/followups", methods=["GET"])
+def followup_dashboard():
+    """Advisor dashboard - review and send follow-up messages."""
+    # Optional password protection (same as main dashboard)
+    if DASHBOARD_PASSWORD:
+        pwd = request.args.get("pwd", "")
+        if pwd != DASHBOARD_PASSWORD:
+            return "Access denied. Add ?pwd=your_password to the URL.", 401
+
+    advisor_filter = request.args.get("advisor", None)
+
+    html = """<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>MoneyIQ - Follow-Up Dashboard</title>
+    <style>
+        * { margin: 0; padding: 0; box-sizing: border-box; }
+        body {
+            font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
+            background: #0f1117;
+            color: #e1e4e8;
+            min-height: 100vh;
+        }
+        .header {
+            background: linear-gradient(135deg, #1a1f2e 0%, #0f1117 100%);
+            border-bottom: 1px solid #2d333b;
+            padding: 20px 32px;
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+        }
+        .header h1 { font-size: 22px; font-weight: 600; color: #f0f3f6; }
+        .header h1 span { color: #58a6ff; }
+        .header-right { display: flex; align-items: center; gap: 12px; }
+        .btn {
+            padding: 8px 16px;
+            border-radius: 6px;
+            border: 1px solid #363b42;
+            background: #21262d;
+            color: #c9d1d9;
+            cursor: pointer;
+            font-size: 13px;
+            text-decoration: none;
+            transition: background 0.2s;
+        }
+        .btn:hover { background: #30363d; }
+        .btn-send {
+            background: #238636;
+            border-color: #2ea043;
+            color: #fff;
+        }
+        .btn-send:hover { background: #2ea043; }
+        .btn-skip {
+            background: #21262d;
+            border-color: #363b42;
+            color: #8b949e;
+        }
+        .btn-wa {
+            background: #25d366;
+            border-color: #25d366;
+            color: #fff;
+        }
+        .btn-wa:hover { background: #1da851; }
+        .container { max-width: 1000px; margin: 0 auto; padding: 24px; }
+        .stats {
+            display: grid;
+            grid-template-columns: repeat(4, 1fr);
+            gap: 12px;
+            margin-bottom: 24px;
+        }
+        .stat-card {
+            background: #161b22;
+            border: 1px solid #21262d;
+            border-radius: 10px;
+            padding: 16px;
+            text-align: center;
+        }
+        .stat-value { font-size: 28px; font-weight: 700; color: #f0f3f6; }
+        .stat-label { font-size: 12px; color: #8b949e; margin-top: 4px; text-transform: uppercase; letter-spacing: 0.5px; }
+        .followup-card {
+            background: #161b22;
+            border: 1px solid #21262d;
+            border-radius: 10px;
+            padding: 20px;
+            margin-bottom: 12px;
+            transition: border-color 0.2s;
+        }
+        .followup-card:hover { border-color: #363b42; }
+        .followup-header {
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+            margin-bottom: 12px;
+        }
+        .client-name { font-size: 16px; font-weight: 600; color: #f0f3f6; }
+        .channel-badge {
+            padding: 3px 10px;
+            border-radius: 12px;
+            font-size: 11px;
+            font-weight: 600;
+            text-transform: uppercase;
+        }
+        .channel-whatsapp { background: rgba(37, 211, 102, 0.15); color: #25d366; }
+        .channel-email { background: rgba(88, 166, 255, 0.15); color: #58a6ff; }
+        .followup-meta {
+            display: flex;
+            gap: 16px;
+            margin-bottom: 12px;
+            font-size: 12px;
+            color: #8b949e;
+        }
+        .followup-meta span { display: flex; align-items: center; gap: 4px; }
+        .message-preview {
+            background: #0d1117;
+            border: 1px solid #21262d;
+            border-radius: 8px;
+            padding: 14px;
+            margin-bottom: 14px;
+            font-size: 14px;
+            line-height: 1.5;
+            color: #c9d1d9;
+            white-space: pre-wrap;
+            max-height: 200px;
+            overflow-y: auto;
+        }
+        .followup-actions {
+            display: flex;
+            gap: 8px;
+            align-items: center;
+        }
+        .section-title {
+            font-size: 14px;
+            font-weight: 600;
+            color: #8b949e;
+            text-transform: uppercase;
+            letter-spacing: 0.5px;
+            margin: 24px 0 12px;
+            padding-bottom: 8px;
+            border-bottom: 1px solid #21262d;
+        }
+        .empty-state {
+            text-align: center;
+            padding: 60px 20px;
+            color: #8b949e;
+        }
+        .empty-state .icon { font-size: 48px; margin-bottom: 12px; }
+        .filter-bar {
+            display: flex;
+            gap: 8px;
+            margin-bottom: 20px;
+        }
+        .filter-btn {
+            padding: 6px 14px;
+            border-radius: 20px;
+            border: 1px solid #363b42;
+            background: transparent;
+            color: #8b949e;
+            cursor: pointer;
+            font-size: 13px;
+            transition: all 0.2s;
+        }
+        .filter-btn.active {
+            background: #58a6ff;
+            border-color: #58a6ff;
+            color: #fff;
+        }
+        .subject-line {
+            font-size: 12px;
+            color: #58a6ff;
+            margin-bottom: 8px;
+        }
+        .replied-badge {
+            background: rgba(63, 185, 80, 0.15);
+            color: #3fb950;
+            padding: 2px 8px;
+            border-radius: 8px;
+            font-size: 11px;
+        }
+        .opened-badge {
+            background: rgba(210, 153, 34, 0.15);
+            color: #d29922;
+            padding: 2px 8px;
+            border-radius: 8px;
+            font-size: 11px;
+        }
+    </style>
+</head>
+<body>
+    <div class="header">
+        <h1>MoneyIQ <span>Follow-Ups</span></h1>
+        <div class="header-right">
+            <a href="/dashboard" class="btn">Main Dashboard</a>
+            <button class="btn" onclick="loadFollowups()">Refresh</button>
+        </div>
+    </div>
+
+    <div class="container">
+        <div class="stats">
+            <div class="stat-card">
+                <div class="stat-value" id="stat-ready">-</div>
+                <div class="stat-label">Ready to Send</div>
+            </div>
+            <div class="stat-card">
+                <div class="stat-value" id="stat-pending">-</div>
+                <div class="stat-label">Upcoming</div>
+            </div>
+            <div class="stat-card">
+                <div class="stat-value" id="stat-sent">-</div>
+                <div class="stat-label">Sent Today</div>
+            </div>
+            <div class="stat-card">
+                <div class="stat-value" id="stat-replied">-</div>
+                <div class="stat-label">Client Replies</div>
+            </div>
+        </div>
+
+        <div class="filter-bar" id="filter-bar">
+            <button class="filter-btn active" data-filter="all" onclick="filterCards('all', this)">All</button>
+            <button class="filter-btn" data-filter="WhatsApp" onclick="filterCards('WhatsApp', this)">WhatsApp</button>
+            <button class="filter-btn" data-filter="Email" onclick="filterCards('Email', this)">Email</button>
+        </div>
+
+        <div id="followup-list">
+            <div class="empty-state">
+                <div class="icon">Loading...</div>
+            </div>
+        </div>
+    </div>
+
+    <script>
+        let allFollowups = [];
+
+        async function loadFollowups() {
+            try {
+                const resp = await fetch('/api/followups""" + (f"?advisor={advisor_filter}" if advisor_filter else "") + """');
+                const data = await resp.json();
+                allFollowups = data.followups || [];
+
+                // Update stats
+                document.getElementById('stat-ready').textContent = data.stats?.ready || 0;
+                document.getElementById('stat-pending').textContent = data.stats?.pending || 0;
+                document.getElementById('stat-sent').textContent = data.stats?.sent_today || 0;
+                document.getElementById('stat-replied').textContent = data.stats?.replied || 0;
+
+                renderFollowups(allFollowups);
+            } catch(e) {
+                document.getElementById('followup-list').innerHTML =
+                    '<div class="empty-state"><div class="icon">Error</div><p>Could not load follow-ups</p></div>';
+            }
+        }
+
+        function renderFollowups(items) {
+            const container = document.getElementById('followup-list');
+            if (!items.length) {
+                container.innerHTML = '<div class="empty-state"><div class="icon">All clear</div><p>No follow-ups ready to send right now. Check back tomorrow at 9 AM.</p></div>';
+                return;
+            }
+
+            let html = '';
+            items.forEach(fu => {
+                const channelClass = fu.channel === 'WhatsApp' ? 'channel-whatsapp' : 'channel-email';
+                const badges = [];
+                if (fu.client_replied) badges.push('<span class="replied-badge">Replied</span>');
+                if (fu.email_opened) badges.push('<span class="opened-badge">Opened</span>');
+
+                let actions = '';
+                if (fu.channel === 'WhatsApp' && fu.whatsapp_link) {
+                    actions = `
+                        <a href="${fu.whatsapp_link}" target="_blank" class="btn btn-wa" onclick="markSent('${fu.id}')">Open WhatsApp</a>
+                        <button class="btn btn-skip" onclick="skipFollowup('${fu.id}')">Skip</button>
+                    `;
+                } else if (fu.channel === 'Email') {
+                    actions = `
+                        <button class="btn btn-send" onclick="markSent('${fu.id}')">Mark Sent (Draft in Gmail)</button>
+                        <button class="btn btn-skip" onclick="skipFollowup('${fu.id}')">Skip</button>
+                    `;
+                } else {
+                    actions = `
+                        <button class="btn btn-send" onclick="markSent('${fu.id}')">Mark Sent</button>
+                        <button class="btn btn-skip" onclick="skipFollowup('${fu.id}')">Skip</button>
+                    `;
+                }
+
+                let subjectHtml = '';
+                if (fu.email_subject) {
+                    subjectHtml = `<div class="subject-line">Subject: ${fu.email_subject}</div>`;
+                }
+
+                html += `
+                <div class="followup-card" data-channel="${fu.channel}" data-id="${fu.id}">
+                    <div class="followup-header">
+                        <span class="client-name">${fu.client_name || 'Unknown'}</span>
+                        <div style="display:flex; gap:8px; align-items:center;">
+                            ${badges.join('')}
+                            <span class="channel-badge ${channelClass}">${fu.channel}</span>
+                        </div>
+                    </div>
+                    <div class="followup-meta">
+                        <span>Day ${fu.day_number} - ${fu.touchpoint_type || ''}</span>
+                        <span>Advisor: ${fu.advisor || ''}</span>
+                        <span>Scheduled: ${fu.scheduled_date || ''}</span>
+                    </div>
+                    ${subjectHtml}
+                    <div class="message-preview">${fu.message || 'No message generated'}</div>
+                    <div class="followup-actions">${actions}</div>
+                </div>`;
+            });
+            container.innerHTML = html;
+        }
+
+        function filterCards(channel, btn) {
+            document.querySelectorAll('.filter-btn').forEach(b => b.classList.remove('active'));
+            btn.classList.add('active');
+            if (channel === 'all') {
+                renderFollowups(allFollowups);
+            } else {
+                renderFollowups(allFollowups.filter(fu => fu.channel === channel));
+            }
+        }
+
+        async function markSent(pageId) {
+            try {
+                await fetch(`/followups/send/${pageId}`, {method: 'POST'});
+                // Remove card from UI
+                const card = document.querySelector(`[data-id="${pageId}"]`);
+                if (card) card.style.display = 'none';
+                // Update stat
+                const el = document.getElementById('stat-ready');
+                el.textContent = Math.max(0, parseInt(el.textContent) - 1);
+            } catch(e) {
+                alert('Failed to mark as sent');
+            }
+        }
+
+        async function skipFollowup(pageId) {
+            if (!confirm('Skip this follow-up?')) return;
+            try {
+                await fetch(`/followups/skip/${pageId}`);
+                const card = document.querySelector(`[data-id="${pageId}"]`);
+                if (card) card.style.display = 'none';
+                const el = document.getElementById('stat-ready');
+                el.textContent = Math.max(0, parseInt(el.textContent) - 1);
+            } catch(e) {
+                alert('Failed to skip');
+            }
+        }
+
+        // Load on page open
+        loadFollowups();
+        // Auto-refresh every 60 seconds
+        setInterval(loadFollowups, 60000);
+    </script>
+</body>
+</html>"""
+    return html
+
+
+@app.route("/api/followups", methods=["GET"])
+def api_followups():
+    """API endpoint for follow-up dashboard data."""
+    advisor_filter = request.args.get("advisor", None)
+
+    try:
+        # get_dashboard_followups returns pre-formatted dicts (not raw Notion pages)
+        items = get_dashboard_followups(advisor_filter)
+
+        # Stats
+        ready = len(items)  # All returned items are "Ready" status
+        pending = 0  # Would need a separate query for pending
+        sent_today = 0  # Would need a separate query for sent today
+        replied = sum(1 for i in items if i.get("client_replied"))
+
+        return jsonify({
+            "followups": items,
+            "stats": {
+                "ready": ready,
+                "pending": pending,
+                "sent_today": sent_today,
+                "replied": replied
+            }
+        })
+    except Exception as e:
+        print(f"  ⚠️ Follow-up API error: {e}")
+        import traceback
+        traceback.print_exc()
+        return jsonify({"followups": [], "stats": {}, "error": str(e)}), 500
+
+
+# ══════════════════════════════════════════════
+# DAILY FOLLOW-UP SCHEDULER - runs at 9 AM IST
+# ══════════════════════════════════════════════
+
+FOLLOWUP_HOUR_IST = 9  # 9 AM IST
+
+def followup_check_loop():
+    """Background thread that processes due follow-ups at 9 AM IST daily."""
+    time.sleep(120)  # Wait 2 min after startup
+    print(f"\n  FOLLOWUP SCHEDULER: Started (runs daily at {FOLLOWUP_HOUR_IST}:00 IST)")
+
+    last_run_date = None
+
+    while True:
+        ist_now = _get_ist_now()
+        today = ist_now.date()
+
+        # Run once per day at 9 AM IST (or later if server was down)
+        if ist_now.hour >= FOLLOWUP_HOUR_IST and last_run_date != today:
+            try:
+                print(f"\n{'='*60}")
+                print(f"  FOLLOWUP SCHEDULER: Processing due follow-ups at {ist_now.strftime('%I:%M %p IST')}")
+                print(f"{'='*60}")
+                process_due_followups()
+                last_run_date = today
+                log_agent_complete("followup_scheduler", {"date": today.isoformat()})
+            except Exception as e:
+                print(f"  FOLLOWUP SCHEDULER ERROR: {e}")
+                log_agent_error("followup_scheduler", str(e))
+                last_run_date = today  # Don't retry on error, wait for next day
+
+        # Check every 10 minutes
+        time.sleep(600)
+
+
+_followup_scheduler_started = False
+_followup_scheduler_lock = threading.Lock()
+
+def start_followup_scheduler():
+    """Start the daily follow-up processing scheduler."""
+    global _followup_scheduler_started
+    with _followup_scheduler_lock:
+        if _followup_scheduler_started:
+            return
+        _followup_scheduler_started = True
+
+    t = threading.Thread(target=followup_check_loop, daemon=True, name="followup-scheduler")
+    t.start()
+    print(f"  FOLLOWUP SCHEDULER: Daily follow-up checker enabled ({FOLLOWUP_HOUR_IST}:00 IST)")
+
+
+# Start the follow-up scheduler when module loads
+start_followup_scheduler()
 
 
 if __name__ == "__main__":

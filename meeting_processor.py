@@ -30,17 +30,29 @@ from notion_helpers import (
     create_contact, update_contact, get_contact_field,
     create_meeting, create_task
 )
+from followup_manager import create_followup_sequence
 
 client = Anthropic(api_key=CLAUDE_API_KEY)
 
 
-def analyze_meeting_with_claude(transcript_text, advisor_name, client_name):
+def analyze_meeting_with_claude(transcript_text, advisor_name, client_name, existing_profile=None):
     # Look up advisor phone for email signatures
     advisor_phone_for_prompt = ""
     for adv_info in ADVISORS.values():
         if adv_info["name"] == advisor_name:
             advisor_phone_for_prompt = adv_info.get("phone", "")
             break
+
+    # Build merge context — pass existing profile data so Claude updates instead of overwriting
+    profile_block = ""
+    if existing_profile and any(existing_profile.values()):
+        profile_block = (
+            "\nEXISTING CLIENT PROFILE (from previous meetings — MERGE new info into this, do not discard):\n"
+            f"  Family Details: {existing_profile.get('family_details', '') or '(none)'}\n"
+            f"  Psychological Profile: {existing_profile.get('psychological_profile', '') or '(none)'}\n"
+            f"  Personal Context: {existing_profile.get('personal_context', '') or '(none)'}\n"
+            f"  Closing Phrases: {existing_profile.get('closing_phrases', '') or '(none)'}\n"
+        )
 
     # Build CA introduction instruction with real contact details
     # Uses Udayan's exact tone: warm, short, personal, trusting
@@ -159,6 +171,14 @@ Analyze the following transcript and return a JSON object with these exact keys:
     "additional_attendees": ["Any additional people mentioned who should join the next meeting that were NOT in this meeting. e.g., 'husband Nitin', 'wife Rishita'. Empty array if none mentioned."]
   }},
 
+  "family_details": "Names, ages, relationships of spouse, kids, parents, siblings — anything personal about the family. If updating an existing profile, MERGE new info with the existing details (do not discard prior data). Empty string if nothing new and no prior data.",
+
+  "psychological_profile": "A 3-5 sentence read of the client: risk tolerance, decision-making style, communication preferences, anxieties, motivations, what drives them. If updating, refine the existing profile with new observations.",
+
+  "personal_context": "Hobbies, life events, career details, health notes, recent changes, anything personal not captured elsewhere. Merge with existing if updating.",
+
+  "closing_phrases": "Specific words, phrases, or framings that resonated with this client during the call (or could resonate based on their personality). 2-4 short examples. Merge with existing if updating.",
+
   "investment_readiness": {{
     "ready_to_invest": true/false,
     "residency_status": "Resident" or "NRI" or "Unknown",
@@ -167,7 +187,19 @@ Analyze the following transcript and return a JSON object with these exact keys:
     "signal": "What in the conversation indicated readiness to invest? Empty string if not ready."
   }},
 
-  "content_ideas": ["Any interesting questions or topics from this meeting that could make good content for YouTube or social media. 1-3 ideas, or empty array."]
+  "content_ideas": ["Any interesting questions or topics from this meeting that could make good content for YouTube or social media. 1-3 ideas, or empty array."],
+
+  "followup_messages": {{
+    "day1_whatsapp": "A warm, short WhatsApp check-in message (2-3 sentences max). Sent 1 day after the meeting. Purpose: make the client feel remembered. Reference something SPECIFIC from the meeting - a personal detail, a concern they raised, or a goal they mentioned. Example tone: 'Hi [first name], was great chatting yesterday! Just wanted to check - did you get a chance to look at the CAMS statement link I shared? No rush at all, happy to help whenever you are ready.' Do NOT use formal language. Write like a friend texting, not a corporate follow-up. Use the client's first name.",
+
+    "day3_whatsapp": "A gentle nudge WhatsApp message (2-3 sentences max). Sent 3 days after the meeting. Purpose: remind about any pending items WITHOUT being pushy. Reference the specific pending item from the meeting (documents to share, forms to fill, decisions to make). If nothing is pending from the client, return empty string. Example tone: 'Hi [first name], just a gentle reminder about [specific pending item]. Happy to jump on a quick call if you have any questions about it.' Keep it helpful, not salesy.",
+
+    "day7_email_subject": "A short email subject line for the Day 7 value-add email. Should reference something useful - an article, insight, or update relevant to what was discussed. Example: 'Thought you might find this useful - [topic]' or 'Quick update on [topic we discussed]'. Under 60 characters.",
+
+    "day7_email_body": "A value-add email body (4-6 sentences). Sent 7 days after the meeting. Purpose: provide genuine value without asking for anything. Share a relevant insight, market update, article summary, or tip related to what was discussed in the meeting. For example, if they discussed SIPs, share a quick insight about SIP timing or market conditions. If they discussed tax planning, share a relevant tax-saving tip. End with a soft availability line like 'Happy to discuss if you would like to explore this further.' Sign off with: Warm regards,\\n{advisor_name}\\nMoneyIQ",
+
+    "day14_whatsapp": "A soft re-engagement WhatsApp message (2-3 sentences max). Sent 14 days after the meeting. Purpose: reopen the conversation without pressure. Reference the original meeting context but acknowledge that life gets busy. Example tone: 'Hi [first name], hope you have been well! I was thinking about our conversation about [specific topic] and wanted to check if you had any more thoughts on it. No pressure at all - just here whenever you are ready to move forward.' Do NOT be desperate or overly eager."
+  }}
 }}
 
 IMPORTANT RULES:
@@ -189,7 +221,8 @@ IMPORTANT RULES:
 - NEVER use the phrases "financial plan", "wealth plan", "financial planning", "wealth planning", or any variation in email subjects or body text. Instead, be SPECIFIC about what was discussed - use the actual topics like "your retirement goal", "your SIP plan", "your children's education fund", "your portfolio review", "your tax planning", etc. Always reference the specific topic, never generic "plan" language.
 - NEVER use em dashes in any email text. Use regular dashes (-) or commas instead.
 - NEVER use the word "recommendations" in client-facing emails. Use "action points" instead.
-
+- For family_details/psychological_profile/personal_context/closing_phrases: if existing profile data is provided below, MERGE the new observations into the existing data (do not discard the prior info). If no new info on a field, return the existing value unchanged.
+{profile_block}
 TRANSCRIPT:
 {transcript_text}
 """
@@ -308,25 +341,37 @@ def process_single_meeting(transcript_id, duration_hint=None):
     print(f"  👤 Advisor: {advisor_name}")
     print(f"  👤 Client:  {client_name}")
 
-    # Step 3: Send to Claude for analysis
+    # Step 3: Pre-fetch existing contact (if any) to feed prior profile data into Claude
+    existing_contact = None
+    for p in transcript.get("participants", []):
+        if "@" in p:
+            is_advisor = any(a["email"].lower() == p.lower() for a in ADVISORS.values())
+            if not is_advisor:
+                existing_contact = find_contact_by_email(p)
+                if existing_contact:
+                    break
+    if not existing_contact and client_name != "Unknown Client":
+        existing_contact = find_contact_by_name(client_name)
+
+    existing_profile = None
+    if existing_contact:
+        existing_profile = {
+            "family_details": get_contact_field(existing_contact, "Family Details") or "",
+            "psychological_profile": get_contact_field(existing_contact, "Psychological Profile") or "",
+            "personal_context": get_contact_field(existing_contact, "Personal Context") or "",
+            "closing_phrases": get_contact_field(existing_contact, "Closing Phrases") or "",
+        }
+
+    # Step 3b: Send to Claude for analysis (with existing profile for merge)
     transcript_text = format_transcript_for_claude(transcript)
-    analysis = analyze_meeting_with_claude(transcript_text, advisor_name, client_name)
+    analysis = analyze_meeting_with_claude(transcript_text, advisor_name, client_name, existing_profile=existing_profile)
     if not analysis:
         print("  ⚠️  Claude analysis failed. Skipping.")
         return
 
-    # Step 4: Find or create the contact in Notion
-    contact = None
+    # Step 4: Find or create the contact in Notion (reuse from step 3 if found)
+    contact = existing_contact
     participants = transcript.get("participants", [])
-    for p in participants:
-        if "@" in p:
-            for advisor_info in ADVISORS.values():
-                if advisor_info["email"].lower() != p.lower():
-                    contact = find_contact_by_email(p)
-                    break
-
-    if not contact and client_name != "Unknown Client":
-        contact = find_contact_by_name(client_name)
 
     if not contact:
         print(f"  📝 Creating new contact: {client_name}")
@@ -398,6 +443,17 @@ def process_single_meeting(transcript_id, duration_hint=None):
         contact_updates["Financial Goals"] = analysis["client_financial_goals"]
     if analysis.get("investment_amount_discussed"):
         contact_updates["Investment Amount"] = analysis["investment_amount_discussed"]
+
+    # Family/psych/context/closing — overwrite with merged version Claude returned
+    for fld_key, fld_name in [
+        ("family_details", "Family Details"),
+        ("psychological_profile", "Psychological Profile"),
+        ("personal_context", "Personal Context"),
+        ("closing_phrases", "Closing Phrases"),
+    ]:
+        val = analysis.get(fld_key)
+        if val:
+            contact_updates[fld_name] = val
 
     update_contact(contact_id, contact_updates)
 
@@ -977,6 +1033,67 @@ def process_single_meeting(transcript_id, duration_hint=None):
                 "meeting_date": meeting_date_str,
                 "context": analysis.get("summary", "")
             })
+
+    # --- FOLLOW-UP SEQUENCE → Create contextual post-meeting touchpoints ---
+    try:
+        followup_msgs = analysis.get("followup_messages", {})
+        if followup_msgs and any(v for v in followup_msgs.values() if v):
+            meeting_id = meeting_record["id"] if meeting_record else None
+
+            # Transform Claude's flat dict into the list format followup_manager expects
+            sequence_items = []
+
+            # Day 1 — WhatsApp warm check-in
+            if followup_msgs.get("day1_whatsapp"):
+                sequence_items.append({
+                    "day": 1, "channel": "WhatsApp", "type": "warm_checkin",
+                    "message": followup_msgs["day1_whatsapp"], "subject": ""
+                })
+
+            # Day 3 — WhatsApp action nudge (conditional)
+            if followup_msgs.get("day3_whatsapp"):
+                sequence_items.append({
+                    "day": 3, "channel": "WhatsApp", "type": "action_nudge",
+                    "message": followup_msgs["day3_whatsapp"], "subject": ""
+                })
+
+            # Day 7 — Email value-add
+            if followup_msgs.get("day7_email_body"):
+                sequence_items.append({
+                    "day": 7, "channel": "Email", "type": "value_add",
+                    "message": followup_msgs["day7_email_body"],
+                    "subject": followup_msgs.get("day7_email_subject", "Following up")
+                })
+
+            # Day 14 — WhatsApp soft re-engagement
+            if followup_msgs.get("day14_whatsapp"):
+                sequence_items.append({
+                    "day": 14, "channel": "WhatsApp", "type": "soft_reengage",
+                    "message": followup_msgs["day14_whatsapp"], "subject": ""
+                })
+
+            if sequence_items:
+                create_followup_sequence(
+                    contact_id=contact_id,
+                    contact_name=client_name,
+                    client_email=client_email or "",
+                    client_phone=client_phone_from_crm or "",
+                    advisor_name=advisor_name,
+                    meeting_id=meeting_id,
+                    meeting_date_str=meeting_date_str,
+                    followup_messages=sequence_items
+                )
+            print(f"\n{'─'*60}")
+            print(f"  📅 FOLLOW-UP SEQUENCE CREATED")
+            print(f"     4 touchpoints scheduled (Day 1, 3, 7, 14)")
+            print(f"     Dashboard: /followups")
+            print(f"{'─'*60}")
+        else:
+            print(f"  ⚠️ No follow-up messages generated by Claude — skipping sequence")
+    except Exception as e:
+        print(f"  ⚠️ Follow-up sequence creation failed: {e}")
+        import traceback
+        traceback.print_exc()
 
     print(f"\n{'='*60}")
     print(f"  ✅ Meeting processing complete!")

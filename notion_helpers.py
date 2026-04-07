@@ -19,6 +19,23 @@ HEADERS = {
 BASE_URL = "https://api.notion.com/v1"
 
 
+def ensure_contact_fields():
+    """One-time setup: ensure new prep-related fields exist on the Contacts DB."""
+    new_fields = {
+        "Family Details": {"rich_text": {}},
+        "Psychological Profile": {"rich_text": {}},
+        "Personal Context": {"rich_text": {}},
+        "Closing Phrases": {"rich_text": {}},
+    }
+    url = f"{BASE_URL}/databases/{CONTACTS_DB_ID}"
+    resp = requests.patch(url, headers=HEADERS, json={"properties": new_fields})
+    if resp.status_code == 200:
+        print("  ✅ Notion contact fields ensured (Family/Psych/Context/Closing)")
+        return True
+    print(f"  ❌ Failed to add fields: {resp.status_code} {resp.text[:200]}")
+    return False
+
+
 # ══════════════════════════════════════════════
 # CONTACTS
 # ══════════════════════════════════════════════
@@ -120,7 +137,8 @@ def update_contact(contact_page_id, updates):
     RICH_TEXT_FIELDS = [
         "Insurance Requirements", "Financial Goals", "Notes",
         "Awaiting From Client", "Location", "Investing Goals",
-        "Calendly Event Type", "Lead Source"
+        "Calendly Event Type", "Lead Source",
+        "Family Details", "Psychological Profile", "Personal Context", "Closing Phrases"
     ]
 
     # Fields that are PHONE_NUMBER type

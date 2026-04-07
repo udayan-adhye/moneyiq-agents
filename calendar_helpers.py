@@ -229,6 +229,51 @@ def approve_and_send_invites(advisor_email, event_id):
         return False
 
 
+def list_upcoming_events(advisor_email, start_dt, end_dt):
+    """
+    List events on the advisor's primary calendar between start_dt and end_dt.
+    start_dt / end_dt are datetime objects (timezone-aware preferred).
+    Returns a list of dicts with id, summary, start, end, attendees (list of emails).
+    """
+    service = get_calendar_service(advisor_email)
+    if not service:
+        return []
+
+    try:
+        # RFC3339 format
+        time_min = start_dt.isoformat() if hasattr(start_dt, "isoformat") else str(start_dt)
+        time_max = end_dt.isoformat() if hasattr(end_dt, "isoformat") else str(end_dt)
+        if not time_min.endswith("Z") and "+" not in time_min and "-" not in time_min[10:]:
+            time_min += "Z"
+        if not time_max.endswith("Z") and "+" not in time_max and "-" not in time_max[10:]:
+            time_max += "Z"
+
+        result = service.events().list(
+            calendarId="primary",
+            timeMin=time_min,
+            timeMax=time_max,
+            singleEvents=True,
+            orderBy="startTime",
+            maxResults=50,
+        ).execute()
+
+        events = []
+        for ev in result.get("items", []):
+            attendees = [a.get("email", "") for a in ev.get("attendees", []) if a.get("email")]
+            events.append({
+                "id": ev.get("id"),
+                "summary": ev.get("summary", ""),
+                "start": ev.get("start", {}).get("dateTime") or ev.get("start", {}).get("date"),
+                "end": ev.get("end", {}).get("dateTime") or ev.get("end", {}).get("date"),
+                "attendees": attendees,
+                "html_link": ev.get("htmlLink", ""),
+            })
+        return events
+    except Exception as e:
+        print(f"  ❌ Failed to list events for {advisor_email}: {e}")
+        return []
+
+
 def delete_meeting(advisor_email, event_id):
     """Delete a pending meeting that was rejected."""
     service = get_calendar_service(advisor_email)
