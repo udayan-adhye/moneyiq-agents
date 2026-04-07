@@ -36,9 +36,10 @@ CALENDLY_API_KEY   = os.environ.get("CALENDLY_API_KEY", "")
 # -----------------------------------------
 # NOTION DATABASE IDs
 # -----------------------------------------
-CONTACTS_DB_ID = os.environ.get("CONTACTS_DB_ID", "")
-MEETINGS_DB_ID = os.environ.get("MEETINGS_DB_ID", "")
-TASKS_DB_ID    = os.environ.get("TASKS_DB_ID", "")
+CONTACTS_DB_ID  = os.environ.get("CONTACTS_DB_ID", "")
+MEETINGS_DB_ID  = os.environ.get("MEETINGS_DB_ID", "")
+TASKS_DB_ID     = os.environ.get("TASKS_DB_ID", "")
+FOLLOWUP_DB_ID  = os.environ.get("FOLLOWUP_DB_ID", "403c199167914baaa09db29395577a30")
 
 # -----------------------------------------
 # GMAIL - OAuth credentials file
@@ -70,8 +71,24 @@ CA_CONTACT_NAME      = "Asmeet Shah"
 # AGENT SETTINGS
 # -----------------------------------------
 DAYS_BEFORE_REMINDER = 3
-FOLLOWUP_SEQUENCE_LENGTH = 5
-FOLLOWUP_INTERVAL_DAYS = [2, 4, 7, 14, 21]
+
+# Research-backed follow-up sequence (Belkins 2025, Gong Labs, Growth List 2026)
+# Day 0 = meeting recap email (already built)
+# Day 1 = WhatsApp warm check-in
+# Day 3 = WhatsApp nudge (conditional — only if items pending)
+# Day 7 = Email value-add touchpoint
+# Day 14 = WhatsApp soft re-engagement
+FOLLOWUP_SEQUENCE = [
+    {"day": 1,  "channel": "WhatsApp", "type": "warm_checkin",    "conditional": False},
+    {"day": 3,  "channel": "WhatsApp", "type": "action_nudge",    "conditional": True},   # skips if nothing pending
+    {"day": 7,  "channel": "Email",    "type": "value_add",       "conditional": False},
+    {"day": 14, "channel": "WhatsApp", "type": "soft_reengage",   "conditional": False},
+]
+FOLLOWUP_SEQUENCE_LENGTH = len(FOLLOWUP_SEQUENCE)
+
+# WhatsApp Business API (Meta Cloud API direct)
+WHATSAPP_API_TOKEN = os.environ.get("WHATSAPP_API_TOKEN", "")
+WHATSAPP_PHONE_ID  = os.environ.get("WHATSAPP_PHONE_ID", "")
 
 # -----------------------------------------
 # HIGH-VALUE CLIENT THRESHOLDS
