@@ -30,8 +30,12 @@ from googleapiclient.discovery import build
 
 from config import GMAIL_CREDENTIALS_FILE
 
-# Gmail API scope - needs to send emails and create drafts
-SCOPES = ["https://www.googleapis.com/auth/gmail.compose"]
+# Gmail API scopes - compose (send/draft) + readonly (check replies)
+# NOTE: If upgrading from compose-only, advisors need to re-authorize once
+SCOPES = [
+    "https://www.googleapis.com/auth/gmail.compose",
+    "https://www.googleapis.com/auth/gmail.readonly",
+]
 
 # Token files - one per advisor so each sends from their own email
 TOKEN_FILES = {
@@ -299,6 +303,115 @@ def save_draft(sender, to, subject, body, cc=None, advisor_email=None, attachmen
     except Exception as e:
         print(f"  ❌ Failed to save draft: {e}")
         return None
+
+
+# ══════════════════════════════════════════════
+# REPLY CHECKING — detect if a client has replied
+# ══════════════════════════════════════════════
+
+def check_for_client_reply(client_email, since_date, advisor_email=None):
+    """
+    Check if a client has sent any emails to the advisor since a given date.
+    Used by the follow-up system to pause sequences when clients reply.
+
+    Args:
+        client_email:  "client@example.com"
+        since_date:    "2026-04-01" (ISO date string)
+        advisor_email: Which advisor's Gmail to check
+
+    Returns:
+        dict with {replied: bool, latest_reply_date: str or None, snippet: str or None}
+    """
+    service = get_gmail_service(advisor_email)
+    if not service:
+        print(f"  ⚠️ Cannot check replies — Gmail not connected for {advisor_email}")
+        return {"replied": False, "latest_reply_date": None, "snippet": None}
+
+    try:
+        # Search for emails FROM the client, received after since_date
+        query = f"from:{client_email} after:{since_date}"
+        results = service.users().messages().list(
+            userId="me",
+            q=query,
+            maxResults=5
+        ).execute()
+
+        messages = results.get("messages", [])
+        if not messages:
+            return {"replied": False, "latest_reply_date": None, "snippet": None}
+
+        # Get the most recent reply details
+        msg = service.users().messages().get(
+            userId="me",
+            id=messages[0]["id"],
+            format="metadata",
+            metadataHeaders=["Date", "Subject"]
+        ).execute()
+
+        # Extract date from headers
+        headers = {h["name"]: h["value"] for h in msg.get("payload", {}).get("headers", [])}
+        reply_date = headers.get("Date", "")
+        snippet = msg.get("snippet", "")[:200]
+
+        print(f"  📬 Client reply detected from {client_email} — {reply_date[:30]}")
+        return {
+            "replied": True,
+            "latest_reply_date": reply_date,
+            "snippet": snippet
+        }
+
+    except Exception as e:
+        print(f"  ⚠️ Error checking replies from {client_email}: {e}")
+        return {"replied": False, "latest_reply_date": None, "snippet": None}
+
+
+def get_email_thread_context(client_email, advisor_email=None, max_messages=5):
+    """
+    Get recent email conversation with a client for context.
+    Used to make follow-up messages aware of previous communication.
+
+    Returns list of {direction: 'sent'|'received', date: str, snippet: str}
+    """
+    service = get_gmail_service(advisor_email)
+    if not service:
+        return []
+
+    try:
+        # Get recent emails with this client (both sent and received)
+        query = f"{{from:{client_email} to:{client_email}}}"
+        results = service.users().messages().list(
+            userId="me",
+            q=query,
+            maxResults=max_messages
+        ).execute()
+
+        messages = results.get("messages", [])
+        context = []
+
+        for msg_ref in messages:
+            msg = service.users().messages().get(
+                userId="me",
+                id=msg_ref["id"],
+                format="metadata",
+                metadataHeaders=["From", "Date", "Subject"]
+            ).execute()
+
+            headers = {h["name"]: h["value"] for h in msg.get("payload", {}).get("headers", [])}
+            from_addr = headers.get("From", "")
+            is_from_client = client_email.lower() in from_addr.lower()
+
+            context.append({
+                "direction": "received" if is_from_client else "sent",
+                "date": headers.get("Date", ""),
+                "subject": headers.get("Subject", ""),
+                "snippet": msg.get("snippet", "")[:200]
+            })
+
+        return context
+
+    except Exception as e:
+        print(f"  ⚠️ Error getting email context for {client_email}: {e}")
+        return []
 
 
 # ══════════════════════════════════════════════
