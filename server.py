@@ -27,6 +27,7 @@ from calendly_intake import run_calendly_intake
 from daily_lead_checker import run_daily_lead_checker
 from advisor_call_review import run_call_review
 from meeting_prep import run_meeting_prep
+from config import ADVISORS
 from activity_log import (
     log_agent_start, log_agent_complete, log_agent_error,
     log_action, get_dashboard_data
@@ -432,6 +433,178 @@ def cron_call_review():
     thread = threading.Thread(target=logged_run_call_review, args=(days,))
     thread.start()
     return jsonify({"status": "processing", "agent": "call_review", "days": days})
+
+
+# ══════════════════════════════════════════════
+# WORKFLOW DASHBOARD API
+# ══════════════════════════════════════════════
+
+@app.route("/api/workflow/tasks", methods=["GET"])
+def api_workflow_tasks():
+    """Get today's action items from Notion Tasks DB."""
+    import requests as req
+    from config import TASKS_DB_ID
+    from daily_lead_checker import get_task_field
+
+    today = datetime.now().strftime("%Y-%m-%d")
+    advisor_filter = request.args.get("advisor")
+
+    # Get all non-done tasks (overdue + due today + upcoming)
+    filter_conds = [
+        {"property": "Status", "select": {"does_not_equal": "Done"}}
+    ]
+    if advisor_filter:
+        filter_conds.append({"property": "Assigned To", "select": {"equals": advisor_filter}})
+
+    payload = {
+        "filter": {"and": filter_conds},
+        "sorts": [
+            {"property": "Due Date", "direction": "ascending"}
+        ]
+    }
+    headers = {
+        "Authorization": f"Bearer {os.environ.get('NOTION_TOKEN', '')}",
+        "Content-Type": "application/json",
+        "Notion-Version": "2022-06-28"
+    }
+    resp = req.post(f"https://api.notion.com/v1/databases/{TASKS_DB_ID}/query",
+                    headers=headers, json=payload)
+    tasks = []
+    if resp.status_code == 200:
+        for t in resp.json().get("results", []):
+            due = get_task_field(t, "Due Date") or ""
+            tasks.append({
+                "id": t["id"],
+                "task": get_task_field(t, "Task") or "",
+                "assigned_to": get_task_field(t, "Assigned To") or "",
+                "status": get_task_field(t, "Status") or "",
+                "due_date": due,
+                "priority": get_task_field(t, "Priority") or "",
+                "contact_name": get_task_field(t, "Contact Name") or "",
+                "overdue": due < today if due else False,
+                "due_today": due == today if due else False,
+            })
+    return jsonify(tasks)
+
+
+@app.route("/api/workflow/tasks/<task_id>/complete", methods=["POST"])
+def api_complete_task(task_id):
+    """Mark a task as Done in Notion."""
+    import requests as req
+    headers = {
+        "Authorization": f"Bearer {os.environ.get('NOTION_TOKEN', '')}",
+        "Content-Type": "application/json",
+        "Notion-Version": "2022-06-28"
+    }
+    resp = req.patch(f"https://api.notion.com/v1/pages/{task_id}",
+                     headers=headers,
+                     json={"properties": {"Status": {"select": {"name": "Done"}}}})
+    return jsonify({"ok": resp.status_code == 200})
+
+
+@app.route("/api/workflow/followups", methods=["GET"])
+def api_workflow_followups():
+    """Get pending/ready follow-ups for the dashboard."""
+    from followup_manager import get_dashboard_followups, get_todays_followups
+    advisor = request.args.get("advisor")
+
+    # First get Ready items (processed by daily checker)
+    items = get_dashboard_followups(advisor)
+
+    # Also include Pending items scheduled for today or earlier (not yet processed)
+    pending = get_todays_followups(advisor)
+    from followup_manager import get_followup_field
+    ready_ids = {i["id"] for i in items}
+
+    for p in pending:
+        if p["id"] not in ready_ids:
+            items.append({
+                "id": p["id"],
+                "touchpoint": get_followup_field(p, "Touchpoint"),
+                "client_name": get_followup_field(p, "Client Name"),
+                "channel": get_followup_field(p, "Channel"),
+                "message": get_followup_field(p, "Message Content"),
+                "whatsapp_link": get_followup_field(p, "WhatsApp Link"),
+                "email_subject": get_followup_field(p, "Email Subject"),
+                "client_email": get_followup_field(p, "Client Email"),
+                "scheduled_date": get_followup_field(p, "Scheduled Date"),
+                "advisor": get_followup_field(p, "Advisor"),
+                "sequence_num": get_followup_field(p, "Sequence Number"),
+                "contact_id": get_followup_field(p, "Contact ID"),
+            })
+
+    return jsonify(items)
+
+
+@app.route("/api/workflow/followups/<followup_id>/send", methods=["POST"])
+def api_send_followup(followup_id):
+    """Send a follow-up email and mark as sent."""
+    from followup_manager import mark_as_sent, get_followup_field
+    import requests as req
+
+    # Get the followup details
+    headers = {
+        "Authorization": f"Bearer {os.environ.get('NOTION_TOKEN', '')}",
+        "Content-Type": "application/json",
+        "Notion-Version": "2022-06-28"
+    }
+    resp = req.get(f"https://api.notion.com/v1/pages/{followup_id}", headers=headers)
+    if resp.status_code != 200:
+        return jsonify({"ok": False, "error": "Not found"}), 404
+
+    fp = resp.json()
+    channel = get_followup_field(fp, "Channel")
+    client_email = get_followup_field(fp, "Client Email")
+    advisor_name = get_followup_field(fp, "Advisor")
+    message = request.json.get("message") or get_followup_field(fp, "Message Content")
+    subject = request.json.get("subject") or get_followup_field(fp, "Email Subject")
+
+    if channel == "Email" and client_email:
+        advisor_email = None
+        for adv in ADVISORS.values():
+            if adv["name"] == advisor_name:
+                advisor_email = adv["email"]
+                break
+        if advisor_email:
+            from gmail_helpers import send_email as gmail_send
+            gmail_send(
+                sender=f"{advisor_name} <{advisor_email}>",
+                to=client_email,
+                subject=subject or f"Following up - {advisor_name.split()[0]}",
+                body=message
+            )
+
+    mark_as_sent(followup_id)
+    return jsonify({"ok": True})
+
+
+@app.route("/api/workflow/followups/<followup_id>/skip", methods=["POST"])
+def api_skip_followup(followup_id):
+    """Skip a follow-up."""
+    from followup_manager import update_followup_status
+    reason = request.json.get("reason", "Skipped from dashboard")
+    update_followup_status(followup_id, "Skipped", skip_reason=reason)
+    return jsonify({"ok": True})
+
+
+@app.route("/api/workflow/followups/<followup_id>/snooze", methods=["POST"])
+def api_snooze_followup(followup_id):
+    """Snooze a follow-up by X days."""
+    import requests as req
+    days = request.json.get("days", 2)
+    new_date = (datetime.now() + timedelta(days=days)).strftime("%Y-%m-%d")
+    headers = {
+        "Authorization": f"Bearer {os.environ.get('NOTION_TOKEN', '')}",
+        "Content-Type": "application/json",
+        "Notion-Version": "2022-06-28"
+    }
+    req.patch(f"https://api.notion.com/v1/pages/{followup_id}",
+              headers=headers,
+              json={"properties": {
+                  "Scheduled Date": {"date": {"start": new_date}},
+                  "Status": {"select": {"name": "Pending"}}
+              }})
+    return jsonify({"ok": True, "new_date": new_date})
 
 
 # ══════════════════════════════════════════════
@@ -1068,6 +1241,21 @@ def dashboard():
 </body>
 </html>"""
     return html
+
+
+# ══════════════════════════════════════════════
+# WORKFLOW DASHBOARD
+# ══════════════════════════════════════════════
+
+@app.route("/workflow", methods=["GET"])
+def workflow_dashboard():
+    """Clean workflow interface — action items + follow-up queue."""
+    if DASHBOARD_PASSWORD:
+        pwd = request.args.get("pwd", "")
+        if pwd != DASHBOARD_PASSWORD:
+            return "<h2>Enter password: /workflow?pwd=YOUR_PASSWORD</h2>", 401
+    from workflow_dashboard import WORKFLOW_HTML
+    return WORKFLOW_HTML
 
 
 # ══════════════════════════════════════════════

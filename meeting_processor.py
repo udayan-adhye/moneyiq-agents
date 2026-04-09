@@ -192,6 +192,8 @@ Analyze the following transcript and return a JSON object with these exact keys:
   "content_ideas": ["Any interesting questions or topics from this meeting that could make good content for YouTube or social media. 1-3 ideas, or empty array."],
 
   "followup_messages": {{
+    "day0_whatsapp": "An immediate post-meeting WhatsApp message (2-3 sentences max). Sent right after the meeting. Purpose: warm acknowledgement + let them know the follow-up email is coming. Tone: friendly, short, like a WhatsApp message to a friend. Example: 'Hi [first name], great talking to you today! I have just shared a detailed email with everything we discussed. Do have a look when you get a chance. Looking forward to our next conversation!' Reference the specific topic discussed, not generic 'our call'. Use the client's first name.",
+
     "day1_whatsapp": "A warm, short WhatsApp check-in message (2-3 sentences max). Sent 1 day after the meeting. Purpose: make the client feel remembered. Reference something SPECIFIC from the meeting - a personal detail, a concern they raised, or a goal they mentioned. Example tone: 'Hi [first name], was great chatting yesterday! Just wanted to check - did you get a chance to look at the CAMS statement link I shared? No rush at all, happy to help whenever you are ready.' Do NOT use formal language. Write like a friend texting, not a corporate follow-up. Use the client's first name.",
 
     "day3_whatsapp": "A gentle nudge WhatsApp message (2-3 sentences max). Sent 3 days after the meeting. Purpose: remind about any pending items WITHOUT being pushy. Reference the specific pending item from the meeting (documents to share, forms to fill, decisions to make). If nothing is pending from the client, return empty string. Example tone: 'Hi [first name], just a gentle reminder about [specific pending item]. Happy to jump on a quick call if you have any questions about it.' Keep it helpful, not salesy.",
@@ -1063,6 +1065,13 @@ def process_single_meeting(transcript_id, duration_hint=None):
 
             # Transform Claude's flat dict into the list format followup_manager expects
             sequence_items = []
+
+            # Day 0 — Immediate WhatsApp (post-meeting acknowledgement)
+            if followup_msgs.get("day0_whatsapp"):
+                sequence_items.append({
+                    "day": 0, "channel": "WhatsApp", "type": "post_meeting",
+                    "message": followup_msgs["day0_whatsapp"], "subject": ""
+                })
 
             # Day 1 — WhatsApp warm check-in
             if followup_msgs.get("day1_whatsapp"):
