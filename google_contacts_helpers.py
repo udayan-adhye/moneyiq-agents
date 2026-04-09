@@ -106,35 +106,35 @@ def get_people_service(advisor_email=None):
 
 def save_to_google_contacts(name, phone=None, email=None, advisor_email=None, company=None):
     """
-    Create or update a contact in the advisor's Google Contacts.
+    Save a contact to ALL advisors' Google Contacts (so everyone has every client).
+    Name format: "FirstName LastName MIQ (AdvisorFirstName)"
     WhatsApp reads from Google Contacts, so the name will appear there automatically.
 
-    Returns the created/updated contact resource name, or None on failure.
+    Args:
+        advisor_email: the assigned advisor — used for the (Name) suffix
     """
-    service = get_people_service(advisor_email)
-    if not service:
-        print(f"  ⚠️ Google Contacts not connected for {advisor_email}")
-        return None
+    from config import ADVISORS
 
     if not name or (not phone and not email):
         return None
 
-    # Check if contact already exists (by phone or email) to avoid duplicates
-    existing = _find_existing_contact(service, phone=phone, email=email)
-    if existing:
-        print(f"  ⏭️  Contact already in Google Contacts: {name}")
-        return existing
+    # Determine assigned advisor's first name for the bracket suffix
+    advisor_first = ""
+    for adv in ADVISORS.values():
+        if adv["email"].lower() == (advisor_email or "").lower():
+            advisor_first = adv["name"].split()[0]
+            break
 
-    # Build the contact body — append "MIQ" suffix so advisor knows it's MoneyIQ-sourced
+    # Build the contact body — "Client Name MIQ (Advisor)"
     name_parts = name.strip().split()
     given_name = name_parts[0] if name_parts else name
-    family_name = " ".join(name_parts[1:]) + " MIQ" if len(name_parts) > 1 else "MIQ"
+    suffix = f"MIQ ({advisor_first})" if advisor_first else "MIQ"
+    family_name = " ".join(name_parts[1:]) + " " + suffix if len(name_parts) > 1 else suffix
     body = {
         "names": [{"givenName": given_name, "familyName": family_name}],
     }
 
     if phone:
-        # Ensure phone has country code
         phone_clean = phone.strip()
         if not phone_clean.startswith("+"):
             phone_clean = "+91" + phone_clean.lstrip("0")
@@ -146,14 +146,30 @@ def save_to_google_contacts(name, phone=None, email=None, advisor_email=None, co
     if company:
         body["organizations"] = [{"name": company}]
 
-    try:
-        result = service.people().createContact(body=body).execute()
-        resource_name = result.get("resourceName", "")
-        print(f"  ✅ Saved to Google Contacts: {name}" + (f" ({phone})" if phone else ""))
-        return resource_name
-    except Exception as e:
-        print(f"  ❌ Failed to save Google Contact: {e}")
-        return None
+    # Save to EVERY advisor's Google Contacts
+    saved_any = False
+    for adv in ADVISORS.values():
+        adv_email = adv["email"]
+        service = get_people_service(adv_email)
+        if not service:
+            print(f"  ⚠️ Google Contacts not connected for {adv_email}")
+            continue
+
+        existing = _find_existing_contact(service, phone=phone, email=email)
+        if existing:
+            print(f"  ⏭️  Already in {adv['name'].split()[0]}'s contacts: {name}")
+            saved_any = True
+            continue
+
+        try:
+            service.people().createContact(body=body).execute()
+            print(f"  ✅ Saved to {adv['name'].split()[0]}'s Google Contacts: {name}" +
+                  (f" ({phone})" if phone else ""))
+            saved_any = True
+        except Exception as e:
+            print(f"  ❌ Failed for {adv['name'].split()[0]}: {e}")
+
+    return saved_any
 
 
 def _find_existing_contact(service, phone=None, email=None):
