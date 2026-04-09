@@ -2,7 +2,7 @@
 Workflow Dashboard
 ==================
 Clean, mobile-friendly interface for daily action items and follow-up queue.
-Served as a Flask blueprint at /workflow.
+Served at /workflow from server.py.
 """
 
 WORKFLOW_HTML = """<!DOCTYPE html>
@@ -11,100 +11,176 @@ WORKFLOW_HTML = """<!DOCTYPE html>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>MoneyIQ Workflow</title>
-    <link href="https://cdn.jsdelivr.net/npm/tailwindcss@2.2.19/dist/tailwind.min.css" rel="stylesheet">
     <style>
-        body { background: #f8fafc; font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif; }
-        .tab-active { border-bottom: 3px solid #2563eb; color: #2563eb; font-weight: 600; }
-        .tab-inactive { color: #64748b; }
-        .card { background: white; border-radius: 12px; box-shadow: 0 1px 3px rgba(0,0,0,0.08); }
-        .overdue { border-left: 4px solid #ef4444; }
-        .due-today { border-left: 4px solid #f59e0b; }
-        .upcoming { border-left: 4px solid #94a3b8; }
-        .whatsapp-btn { background: #25D366; }
-        .whatsapp-btn:hover { background: #1da851; }
-        .email-btn { background: #2563eb; }
-        .email-btn:hover { background: #1d4ed8; }
-        .skip-btn { background: #94a3b8; }
-        .skip-btn:hover { background: #64748b; }
-        .done-btn { background: #10b981; }
-        .done-btn:hover { background: #059669; }
-        .badge { font-size: 11px; padding: 2px 8px; border-radius: 9999px; font-weight: 600; }
-        .badge-overdue { background: #fee2e2; color: #dc2626; }
-        .badge-today { background: #fef3c7; color: #d97706; }
-        .badge-upcoming { background: #f1f5f9; color: #475569; }
-        .badge-whatsapp { background: #dcfce7; color: #16a34a; }
-        .badge-email { background: #dbeafe; color: #2563eb; }
-        .msg-preview { max-height: 80px; overflow: hidden; transition: max-height 0.3s; }
-        .msg-preview.expanded { max-height: 600px; }
-        textarea { resize: vertical; }
-        .loading { opacity: 0.5; pointer-events: none; }
+        * { box-sizing: border-box; margin: 0; padding: 0; }
+        body { background: #f1f5f9; font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif; color: #1e293b; -webkit-font-smoothing: antialiased; }
+
+        /* Header */
+        .header { background: white; border-bottom: 1px solid #e2e8f0; position: sticky; top: 0; z-index: 20; }
+        .header-inner { max-width: 720px; margin: 0 auto; padding: 12px 16px; }
+        .header-top { display: flex; align-items: center; justify-content: space-between; margin-bottom: 12px; }
+        .header-top h1 { font-size: 17px; font-weight: 700; }
+        .header-right { display: flex; align-items: center; gap: 10px; }
+        .logout { font-size: 12px; color: #94a3b8; text-decoration: none; }
+        .logout:hover { color: #ef4444; }
+
+        /* Tabs */
+        .tabs { display: flex; gap: 0; border-bottom: none; }
+        .tab { flex: 1; text-align: center; padding: 8px 0; font-size: 13px; font-weight: 600; color: #94a3b8; cursor: pointer; border-bottom: 2px solid transparent; transition: all 0.2s; background: none; border-top: none; border-left: none; border-right: none; }
+        .tab.active { color: #2563eb; border-bottom-color: #2563eb; }
+        .tab-badge { font-size: 11px; background: #e2e8f0; color: #64748b; padding: 1px 7px; border-radius: 10px; margin-left: 4px; }
+        .tab.active .tab-badge { background: #dbeafe; color: #2563eb; }
+
+        /* Content */
+        .content { max-width: 720px; margin: 0 auto; padding: 12px 16px 80px; }
+        .panel { display: none; }
+        .panel.active { display: block; }
+
+        /* View toggle */
+        .view-toggle { display: flex; gap: 4px; background: #e2e8f0; border-radius: 8px; padding: 3px; margin-bottom: 14px; }
+        .view-btn { flex: 1; text-align: center; padding: 6px 0; font-size: 12px; font-weight: 500; color: #64748b; border: none; background: none; border-radius: 6px; cursor: pointer; }
+        .view-btn.active { background: white; color: #1e293b; box-shadow: 0 1px 2px rgba(0,0,0,0.06); }
+
+        /* Section */
+        .section { margin-bottom: 18px; }
+        .section-header { font-size: 11px; font-weight: 700; text-transform: uppercase; letter-spacing: 0.05em; color: #94a3b8; padding: 0 2px 6px; display: flex; align-items: center; gap: 6px; }
+        .section-count { background: #e2e8f0; color: #64748b; font-size: 10px; padding: 1px 6px; border-radius: 8px; }
+        .section-header.overdue { color: #dc2626; }
+        .section-header.overdue .section-count { background: #fee2e2; color: #dc2626; }
+        .section-header.today { color: #d97706; }
+        .section-header.today .section-count { background: #fef3c7; color: #d97706; }
+
+        /* Task card */
+        .task { background: white; border-radius: 10px; padding: 12px; margin-bottom: 6px; display: flex; align-items: flex-start; gap: 10px; box-shadow: 0 1px 2px rgba(0,0,0,0.04); transition: opacity 0.3s, transform 0.3s; }
+        .task.completing { opacity: 0.3; transform: scale(0.98); }
+        .task-check { width: 20px; height: 20px; border: 2px solid #cbd5e1; border-radius: 6px; cursor: pointer; flex-shrink: 0; display: flex; align-items: center; justify-content: center; transition: all 0.2s; margin-top: 1px; }
+        .task-check:hover { border-color: #22c55e; background: #f0fdf4; }
+        .task-check svg { display: none; width: 12px; height: 12px; }
+        .task-check:hover svg { display: block; color: #22c55e; }
+        .task-body { flex: 1; min-width: 0; }
+        .task-text { font-size: 13px; line-height: 1.4; color: #334155; }
+        .task-meta { display: flex; flex-wrap: wrap; align-items: center; gap: 6px; margin-top: 5px; }
+        .pill { font-size: 10px; padding: 2px 7px; border-radius: 6px; font-weight: 600; white-space: nowrap; }
+        .pill-client { background: #f1f5f9; color: #475569; }
+        .pill-overdue { background: #fee2e2; color: #dc2626; }
+        .pill-today { background: #fef3c7; color: #d97706; }
+        .pill-upcoming { background: #f1f5f9; color: #94a3b8; }
+        .pill-high { background: #fee2e2; color: #dc2626; }
+        .pill-medium { background: #fef3c7; color: #d97706; }
+        .pill-advisor { background: #ede9fe; color: #7c3aed; }
+        .priority-dot { width: 6px; height: 6px; border-radius: 50%; flex-shrink: 0; }
+        .priority-dot.high { background: #ef4444; }
+        .priority-dot.medium { background: #f59e0b; }
+
+        /* Follow-up client group */
+        .fu-group { background: white; border-radius: 12px; margin-bottom: 12px; box-shadow: 0 1px 2px rgba(0,0,0,0.04); overflow: hidden; }
+        .fu-group-header { padding: 12px 14px 8px; border-bottom: 1px solid #f1f5f9; }
+        .fu-client-name { font-size: 14px; font-weight: 700; color: #1e293b; }
+        .fu-client-info { font-size: 11px; color: #94a3b8; margin-top: 2px; }
+
+        /* Follow-up item */
+        .fu-item { padding: 12px 14px; border-bottom: 1px solid #f8fafc; }
+        .fu-item:last-child { border-bottom: none; }
+        .fu-item.future { opacity: 0.45; }
+        .fu-item.sent { opacity: 0.35; }
+        .fu-item-top { display: flex; align-items: center; justify-content: space-between; margin-bottom: 6px; }
+        .fu-label { font-size: 12px; font-weight: 600; color: #475569; }
+        .fu-badges { display: flex; gap: 4px; }
+        .pill-wa { background: #dcfce7; color: #16a34a; }
+        .pill-email { background: #dbeafe; color: #2563eb; }
+        .pill-sent { background: #f1f5f9; color: #94a3b8; text-decoration: line-through; }
+        .fu-msg { width: 100%; border: 1px solid #e2e8f0; border-radius: 8px; padding: 8px 10px; font-size: 12px; color: #334155; font-family: inherit; resize: vertical; line-height: 1.5; min-height: 60px; }
+        .fu-msg:focus { outline: none; border-color: #93c5fd; }
+        .fu-actions { display: flex; gap: 6px; margin-top: 8px; flex-wrap: wrap; }
+
+        /* Buttons */
+        .btn { font-size: 12px; font-weight: 600; padding: 6px 12px; border-radius: 8px; border: none; cursor: pointer; display: inline-flex; align-items: center; gap: 4px; transition: all 0.15s; text-decoration: none; }
+        .btn-wa { background: #25D366; color: white; }
+        .btn-wa:hover { background: #1da851; }
+        .btn-email { background: #2563eb; color: white; }
+        .btn-email:hover { background: #1d4ed8; }
+        .btn-done { background: #10b981; color: white; }
+        .btn-done:hover { background: #059669; }
+        .btn-skip { background: #f1f5f9; color: #64748b; }
+        .btn-skip:hover { background: #e2e8f0; }
+        .btn-snooze { background: #f1f5f9; color: #64748b; }
+        .btn-snooze:hover { background: #e2e8f0; }
+
+        /* Empty state */
+        .empty { text-align: center; padding: 48px 16px; color: #94a3b8; }
+        .empty-icon { font-size: 36px; margin-bottom: 8px; }
+        .empty-text { font-size: 14px; }
+
+        /* Refresh */
+        .refresh-btn { background: none; border: 1px solid #e2e8f0; border-radius: 8px; padding: 6px 10px; font-size: 12px; color: #94a3b8; cursor: pointer; }
+        .refresh-btn:hover { background: #f8fafc; color: #64748b; }
+
+        /* Advisor filter */
+        .advisor-select { font-size: 12px; border: 1px solid #e2e8f0; border-radius: 8px; padding: 5px 8px; background: white; color: #475569; }
+
+        .loading-overlay { pointer-events: none; opacity: 0.5; }
+
+        @media (max-width: 480px) {
+            .fu-actions { flex-direction: column; }
+            .btn { justify-content: center; }
+        }
     </style>
 </head>
-<body class="min-h-screen">
-    <!-- Header -->
-    <div class="bg-white border-b sticky top-0 z-10">
-        <div class="max-w-3xl mx-auto px-4 py-3">
-            <div class="flex items-center justify-between mb-3">
-                <h1 class="text-lg font-bold text-gray-900">MoneyIQ Workflow</h1>
-                <div class="flex items-center gap-3">
-                    <select id="advisorFilter" onchange="loadAll()" class="text-sm border rounded-lg px-3 py-1.5 bg-white">
-                        <option value="">All Advisors</option>
+<body>
+    <div class="header">
+        <div class="header-inner">
+            <div class="header-top">
+                <h1>MoneyIQ</h1>
+                <div class="header-right">
+                    <select id="advisorFilter" onchange="loadAll()" class="advisor-select">
+                        <option value="">All</option>
                         <option value="Udayan Adhye">Udayan</option>
                         <option value="Rishabh Mishra">Rishabh</option>
                     </select>
-                    <a href="/workflow/logout" class="text-xs text-gray-400 hover:text-red-500">Logout</a>
+                    <button onclick="loadAll()" class="refresh-btn">Refresh</button>
+                    <a href="/workflow/logout" class="logout">Logout</a>
                 </div>
             </div>
-            <!-- Tabs -->
-            <div class="flex gap-6">
-                <button onclick="switchTab('tasks')" id="tab-tasks" class="pb-2 text-sm tab-active">
-                    Action Items <span id="tasks-count" class="ml-1 text-xs bg-blue-100 text-blue-700 px-1.5 py-0.5 rounded-full">0</span>
+            <div class="tabs">
+                <button class="tab active" onclick="switchTab('tasks')" id="tab-tasks">
+                    Action Items<span class="tab-badge" id="tasks-count">0</span>
                 </button>
-                <button onclick="switchTab('followups')" id="tab-followups" class="pb-2 text-sm tab-inactive">
-                    Follow-ups <span id="followups-count" class="ml-1 text-xs bg-green-100 text-green-700 px-1.5 py-0.5 rounded-full">0</span>
+                <button class="tab" onclick="switchTab('followups')" id="tab-followups">
+                    Follow-ups<span class="tab-badge" id="followups-count">0</span>
                 </button>
             </div>
         </div>
     </div>
 
-    <!-- Tasks Tab -->
-    <div id="panel-tasks" class="max-w-3xl mx-auto px-4 py-4">
-        <div id="tasks-list"></div>
-        <div id="tasks-empty" class="hidden text-center py-12 text-gray-400">
-            <div class="text-4xl mb-2">&#10003;</div>
-            <p>All caught up! No pending action items.</p>
+    <div class="content">
+        <!-- Tasks Panel -->
+        <div class="panel active" id="panel-tasks">
+            <div class="view-toggle">
+                <button class="view-btn active" onclick="setView('date')" id="view-date">By Date</button>
+                <button class="view-btn" onclick="setView('client')" id="view-client">By Client</button>
+            </div>
+            <div id="tasks-container"></div>
         </div>
-    </div>
 
-    <!-- Follow-ups Tab -->
-    <div id="panel-followups" class="max-w-3xl mx-auto px-4 py-4 hidden">
-        <div id="followups-list"></div>
-        <div id="followups-empty" class="hidden text-center py-12 text-gray-400">
-            <div class="text-4xl mb-2">&#9993;</div>
-            <p>No follow-ups due right now.</p>
+        <!-- Follow-ups Panel -->
+        <div class="panel" id="panel-followups">
+            <div id="followups-container"></div>
         </div>
     </div>
 
     <script>
     let currentTab = 'tasks';
+    let taskView = 'date';
+    let tasksData = [];
+    let followupsData = [];
 
-    function switchTab(tab) {
-        currentTab = tab;
-        document.getElementById('panel-tasks').classList.toggle('hidden', tab !== 'tasks');
-        document.getElementById('panel-followups').classList.toggle('hidden', tab !== 'followups');
-        document.getElementById('tab-tasks').className = 'pb-2 text-sm ' + (tab === 'tasks' ? 'tab-active' : 'tab-inactive');
-        document.getElementById('tab-followups').className = 'pb-2 text-sm ' + (tab === 'followups' ? 'tab-active' : 'tab-inactive');
-    }
-
-    // Role-based filtering: non-admin users can only see their own data
-    // CURRENT_USER is injected by the server (e.g. {username: "rishabh", role: "Rishabh Mishra"})
+    // Role-based filtering (CURRENT_USER injected by server)
     const isAdmin = typeof CURRENT_USER !== 'undefined' && CURRENT_USER.role === 'admin';
     if (typeof CURRENT_USER !== 'undefined' && !isAdmin) {
-        // Lock filter to their advisor name
         const sel = document.getElementById('advisorFilter');
         sel.value = CURRENT_USER.role;
         sel.disabled = true;
-        sel.style.opacity = '0.6';
+        sel.style.opacity = '0.5';
     }
 
     function getAdvisor() {
@@ -112,7 +188,22 @@ WORKFLOW_HTML = """<!DOCTYPE html>
         return document.getElementById('advisorFilter').value;
     }
 
-    function formatDate(d) {
+    function switchTab(tab) {
+        currentTab = tab;
+        document.querySelectorAll('.panel').forEach(p => p.classList.remove('active'));
+        document.querySelectorAll('.tab').forEach(t => t.classList.remove('active'));
+        document.getElementById('panel-' + tab).classList.add('active');
+        document.getElementById('tab-' + tab).classList.add('active');
+    }
+
+    function setView(v) {
+        taskView = v;
+        document.getElementById('view-date').classList.toggle('active', v === 'date');
+        document.getElementById('view-client').classList.toggle('active', v === 'client');
+        renderTasks();
+    }
+
+    function relDate(d) {
         if (!d) return '';
         const dt = new Date(d + 'T00:00:00');
         const today = new Date(); today.setHours(0,0,0,0);
@@ -120,181 +211,249 @@ WORKFLOW_HTML = """<!DOCTYPE html>
         if (diff === 0) return 'Today';
         if (diff === -1) return 'Yesterday';
         if (diff === 1) return 'Tomorrow';
-        if (diff < 0) return Math.abs(diff) + ' days ago';
-        return 'In ' + diff + ' days';
+        if (diff < -1) return Math.abs(diff) + 'd overdue';
+        return 'In ' + diff + 'd';
     }
+
+    function datePill(d) {
+        if (!d) return '';
+        const dt = new Date(d + 'T00:00:00');
+        const today = new Date(); today.setHours(0,0,0,0);
+        const diff = Math.round((dt - today) / 86400000);
+        if (diff < 0) return '<span class="pill pill-overdue">' + Math.abs(diff) + 'd overdue</span>';
+        if (diff === 0) return '<span class="pill pill-today">Today</span>';
+        return '<span class="pill pill-upcoming">' + relDate(d) + '</span>';
+    }
+
+    function esc(s) { const d = document.createElement('div'); d.textContent = s; return d.innerHTML; }
 
     // ── Tasks ──
     async function loadTasks() {
-        const advisor = getAdvisor();
-        const url = advisor ? '/api/workflow/tasks?advisor=' + encodeURIComponent(advisor) : '/api/workflow/tasks';
-        const resp = await fetch(url);
-        const tasks = await resp.json();
+        const a = getAdvisor();
+        const url = a ? '/api/workflow/tasks?advisor=' + encodeURIComponent(a) : '/api/workflow/tasks';
+        const r = await fetch(url);
+        tasksData = await r.json();
+        document.getElementById('tasks-count').textContent = tasksData.length;
+        renderTasks();
+    }
 
-        document.getElementById('tasks-count').textContent = tasks.length;
-        const list = document.getElementById('tasks-list');
-        const empty = document.getElementById('tasks-empty');
+    function renderTasks() {
+        const c = document.getElementById('tasks-container');
+        if (!tasksData.length) {
+            c.innerHTML = '<div class="empty"><div class="empty-icon">&#10003;</div><div class="empty-text">All caught up!</div></div>';
+            return;
+        }
+        if (taskView === 'date') renderTasksByDate(c);
+        else renderTasksByClient(c);
+    }
 
-        if (!tasks.length) { list.innerHTML = ''; empty.classList.remove('hidden'); return; }
-        empty.classList.add('hidden');
+    function renderTasksByDate(c) {
+        const today = new Date(); today.setHours(0,0,0,0);
+        const groups = { overdue: [], today: [], tomorrow: [], week: [], later: [] };
 
-        // Group by contact
-        const grouped = {};
-        tasks.forEach(t => {
-            const key = t.contact_name || 'General';
-            if (!grouped[key]) grouped[key] = [];
-            grouped[key].push(t);
+        tasksData.forEach(t => {
+            if (!t.due_date) { groups.later.push(t); return; }
+            const dt = new Date(t.due_date + 'T00:00:00');
+            const diff = Math.round((dt - today) / 86400000);
+            if (diff < 0) groups.overdue.push(t);
+            else if (diff === 0) groups.today.push(t);
+            else if (diff === 1) groups.tomorrow.push(t);
+            else if (diff <= 7) groups.week.push(t);
+            else groups.later.push(t);
         });
 
         let html = '';
-        for (const [contact, items] of Object.entries(grouped)) {
-            html += '<div class="mb-4"><div class="text-xs font-semibold text-gray-500 uppercase tracking-wide mb-2 px-1">' + contact + '</div>';
-            items.forEach(t => {
-                const cls = t.overdue ? 'overdue' : t.due_today ? 'due-today' : 'upcoming';
-                const badge = t.overdue ? '<span class="badge badge-overdue">Overdue</span>'
-                    : t.due_today ? '<span class="badge badge-today">Today</span>'
-                    : '<span class="badge badge-upcoming">' + formatDate(t.due_date) + '</span>';
-                const priorityColor = t.priority === 'High' ? 'text-red-500' : t.priority === 'Medium' ? 'text-yellow-600' : 'text-gray-400';
+        const sections = [
+            ['overdue', 'Overdue', 'overdue'],
+            ['today', 'Due Today', 'today'],
+            ['tomorrow', 'Tomorrow', ''],
+            ['week', 'This Week', ''],
+            ['later', 'Later', '']
+        ];
 
-                html += '<div class="card ' + cls + ' p-3 mb-2 flex items-start gap-3" id="task-' + t.id + '">'
-                    + '<button onclick="completeTask(\\'' + t.id + '\\')" class="mt-0.5 w-5 h-5 rounded border-2 border-gray-300 hover:border-green-500 hover:bg-green-50 flex-shrink-0 flex items-center justify-center text-xs text-transparent hover:text-green-500">&#10003;</button>'
-                    + '<div class="flex-1 min-w-0">'
-                    + '<div class="text-sm text-gray-900">' + t.task + '</div>'
-                    + '<div class="flex items-center gap-2 mt-1">'
-                    + badge
-                    + '<span class="text-xs text-gray-400">' + (t.assigned_to || '') + '</span>'
-                    + '<span class="text-xs ' + priorityColor + '">' + (t.priority || '') + '</span>'
-                    + '</div></div></div>';
-            });
+        sections.forEach(([key, label, cls]) => {
+            if (!groups[key].length) return;
+            html += '<div class="section">'
+                + '<div class="section-header ' + cls + '">' + label
+                + '<span class="section-count">' + groups[key].length + '</span></div>';
+            groups[key].forEach(t => { html += taskCard(t, true); });
             html += '</div>';
-        }
-        list.innerHTML = html;
+        });
+        c.innerHTML = html;
+    }
+
+    function renderTasksByClient(c) {
+        const grouped = {};
+        tasksData.forEach(t => {
+            const k = t.contact_name || 'General';
+            if (!grouped[k]) grouped[k] = [];
+            grouped[k].push(t);
+        });
+
+        let html = '';
+        Object.keys(grouped).sort().forEach(client => {
+            const items = grouped[client];
+            html += '<div class="section">'
+                + '<div class="section-header">' + esc(client)
+                + '<span class="section-count">' + items.length + '</span></div>';
+            items.sort((a, b) => (a.due_date || 'z').localeCompare(b.due_date || 'z'));
+            items.forEach(t => { html += taskCard(t, false); });
+            html += '</div>';
+        });
+        c.innerHTML = html;
+    }
+
+    function taskCard(t, showClient) {
+        const pDot = t.priority === 'High' ? '<div class="priority-dot high"></div>'
+            : t.priority === 'Medium' ? '<div class="priority-dot medium"></div>' : '';
+        return '<div class="task" id="task-' + t.id + '">'
+            + '<div class="task-check" onclick="completeTask(\\'' + t.id + '\\')">'
+            + '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="3"><path d="M5 13l4 4L19 7"/></svg></div>'
+            + '<div class="task-body">'
+            + '<div class="task-text">' + esc(t.task) + '</div>'
+            + '<div class="task-meta">' + pDot
+            + (showClient && t.contact_name ? '<span class="pill pill-client">' + esc(t.contact_name) + '</span>' : '')
+            + datePill(t.due_date)
+            + (t.assigned_to ? '<span class="pill pill-advisor">' + esc(t.assigned_to.split(' ')[0]) + '</span>' : '')
+            + '</div></div></div>';
     }
 
     async function completeTask(id) {
         const el = document.getElementById('task-' + id);
-        if (el) el.classList.add('loading');
+        if (el) el.classList.add('completing');
         await fetch('/api/workflow/tasks/' + id + '/complete', { method: 'POST' });
-        if (el) el.style.opacity = '0.3';
-        setTimeout(() => loadTasks(), 500);
+        setTimeout(() => { tasksData = tasksData.filter(t => t.id !== id); document.getElementById('tasks-count').textContent = tasksData.length; renderTasks(); }, 400);
     }
 
     // ── Follow-ups ──
     async function loadFollowups() {
-        const advisor = getAdvisor();
-        const url = advisor ? '/api/workflow/followups?advisor=' + encodeURIComponent(advisor) : '/api/workflow/followups';
-        const resp = await fetch(url);
-        const followups = await resp.json();
+        const a = getAdvisor();
+        const url = a ? '/api/workflow/followups?advisor=' + encodeURIComponent(a) : '/api/workflow/followups';
+        const r = await fetch(url);
+        followupsData = await r.json();
+        document.getElementById('followups-count').textContent = followupsData.length;
+        renderFollowups();
+    }
 
-        document.getElementById('followups-count').textContent = followups.length;
-        const list = document.getElementById('followups-list');
-        const empty = document.getElementById('followups-empty');
+    function renderFollowups() {
+        const c = document.getElementById('followups-container');
+        if (!followupsData.length) {
+            c.innerHTML = '<div class="empty"><div class="empty-icon">&#9993;</div><div class="empty-text">No follow-ups pending</div></div>';
+            return;
+        }
 
-        if (!followups.length) { list.innerHTML = ''; empty.classList.remove('hidden'); return; }
-        empty.classList.add('hidden');
+        // Group by client
+        const grouped = {};
+        followupsData.forEach(f => {
+            const k = f.client_name || 'Unknown';
+            if (!grouped[k]) grouped[k] = { items: [], email: f.client_email, advisor: f.advisor };
+            grouped[k].items.push(f);
+        });
 
         let html = '';
-        followups.forEach(f => {
-            const isWA = f.channel === 'WhatsApp';
-            const channelBadge = isWA
-                ? '<span class="badge badge-whatsapp">WhatsApp</span>'
-                : '<span class="badge badge-email">Email</span>';
+        Object.keys(grouped).sort().forEach(client => {
+            const g = grouped[client];
+            // Sort by sequence number
+            g.items.sort((a, b) => (a.sequence_num || 0) - (b.sequence_num || 0));
 
-            const dateBadge = '<span class="badge badge-upcoming">' + formatDate(f.scheduled_date) + '</span>';
+            // Find the first due item (lowest sequence that's not sent)
+            let firstDueIdx = 0;
 
-            // Escape message for textarea
-            const msgEscaped = (f.message || '').replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;');
+            html += '<div class="fu-group">'
+                + '<div class="fu-group-header">'
+                + '<div class="fu-client-name">' + esc(client) + '</div>'
+                + '<div class="fu-client-info">' + esc(g.advisor || '') + (g.email ? ' &middot; ' + esc(g.email) : '') + '</div>'
+                + '</div>';
 
-            html += '<div class="card p-4 mb-3" id="fu-' + f.id + '">'
-                + '<div class="flex items-center justify-between mb-2">'
-                + '<div>'
-                + '<span class="font-semibold text-gray-900 text-sm">' + (f.client_name || '') + '</span>'
-                + '<span class="text-xs text-gray-400 ml-2">' + (f.touchpoint || '') + '</span>'
-                + '</div>'
-                + '<div class="flex gap-1.5">' + channelBadge + dateBadge + '</div>'
-                + '</div>'
+            g.items.forEach((f, i) => {
+                const isWA = f.channel === 'WhatsApp';
+                const isFuture = i > firstDueIdx;
+                const channelPill = isWA
+                    ? '<span class="pill pill-wa">WhatsApp</span>'
+                    : '<span class="pill pill-email">Email</span>';
+                const msgEscaped = (f.message || '').replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;');
 
-                // Message preview / edit
-                + '<textarea id="msg-' + f.id + '" class="w-full text-sm text-gray-700 border rounded-lg p-2 mb-3" rows="3">' + msgEscaped + '</textarea>'
+                html += '<div class="fu-item' + (isFuture ? ' future' : '') + '" id="fu-' + f.id + '">'
+                    + '<div class="fu-item-top">'
+                    + '<div class="fu-label">' + esc(f.touchpoint || '') + '</div>'
+                    + '<div class="fu-badges">' + channelPill + datePill(f.scheduled_date) + '</div>'
+                    + '</div>'
+                    + '<textarea class="fu-msg" id="msg-' + f.id + '">' + msgEscaped + '</textarea>'
+                    + '<div class="fu-actions">';
 
-                // Action buttons
-                + '<div class="flex gap-2">';
-
-            if (isWA && f.whatsapp_link) {
-                html += '<a href="' + f.whatsapp_link + '" target="_blank" class="whatsapp-btn text-white text-xs font-medium px-3 py-1.5 rounded-lg inline-flex items-center gap-1">'
-                    + '<svg width="14" height="14" viewBox="0 0 24 24" fill="currentColor"><path d="M17.472 14.382c-.297-.149-1.758-.867-2.03-.967-.273-.099-.471-.148-.67.15-.197.297-.767.966-.94 1.164-.173.199-.347.223-.644.075-.297-.15-1.255-.463-2.39-1.475-.883-.788-1.48-1.761-1.653-2.059-.173-.297-.018-.458.13-.606.134-.133.298-.347.446-.52.149-.174.198-.298.298-.497.099-.198.05-.371-.025-.52-.075-.149-.669-1.612-.916-2.207-.242-.579-.487-.5-.669-.51-.173-.008-.371-.01-.57-.01-.198 0-.52.074-.792.372-.272.297-1.04 1.016-1.04 2.479 0 1.462 1.065 2.875 1.213 3.074.149.198 2.096 3.2 5.077 4.487.709.306 1.262.489 1.694.625.712.227 1.36.195 1.871.118.571-.085 1.758-.719 2.006-1.413.248-.694.248-1.289.173-1.413-.074-.124-.272-.198-.57-.347z"/><path d="M12 0C5.373 0 0 5.373 0 12c0 2.625.846 5.059 2.284 7.034L.789 23.492l4.627-1.475A11.932 11.932 0 0012 24c6.627 0 12-5.373 12-12S18.627 0 12 0zm0 21.818c-2.168 0-4.19-.581-5.938-1.593l-.424-.252-2.748.877.877-2.687-.276-.44A9.787 9.787 0 012.182 12c0-5.414 4.404-9.818 9.818-9.818S21.818 6.586 21.818 12s-4.404 9.818-9.818 9.818z"/></svg>'
-                    + 'Send on WhatsApp</a>';
-            }
-
-            if (!isWA && f.client_email) {
-                html += '<button onclick="sendEmail(\\'' + f.id + '\\')" class="email-btn text-white text-xs font-medium px-3 py-1.5 rounded-lg">Send Email</button>';
-            }
-
-            // For WhatsApp Day 0, also show "Mark as Sent" after they send manually
-            if (isWA) {
-                html += '<button onclick="markSent(\\'' + f.id + '\\')" class="done-btn text-white text-xs font-medium px-3 py-1.5 rounded-lg">Mark Sent</button>';
-            }
-
-            html += '<button onclick="skipFollowup(\\'' + f.id + '\\')" class="skip-btn text-white text-xs font-medium px-3 py-1.5 rounded-lg">Skip</button>'
-                + '<button onclick="snoozeFollowup(\\'' + f.id + '\\')" class="text-xs text-gray-500 hover:text-gray-700 px-2 py-1.5 border rounded-lg">Snooze 2d</button>'
-                + '</div></div>';
+                if (isWA && f.whatsapp_link) {
+                    html += '<a href="' + f.whatsapp_link + '" target="_blank" class="btn btn-wa">'
+                        + '<svg width="14" height="14" viewBox="0 0 24 24" fill="currentColor"><path d="M17.472 14.382c-.297-.149-1.758-.867-2.03-.967-.273-.099-.471-.148-.67.15-.197.297-.767.966-.94 1.164-.173.199-.347.223-.644.075-.297-.15-1.255-.463-2.39-1.475-.883-.788-1.48-1.761-1.653-2.059-.173-.297-.018-.458.13-.606.134-.133.298-.347.446-.52.149-.174.198-.298.298-.497.099-.198.05-.371-.025-.52-.075-.149-.669-1.612-.916-2.207-.242-.579-.487-.5-.669-.51-.173-.008-.371-.01-.57-.01-.198 0-.52.074-.792.372-.272.297-1.04 1.016-1.04 2.479 0 1.462 1.065 2.875 1.213 3.074.149.198 2.096 3.2 5.077 4.487.709.306 1.262.489 1.694.625.712.227 1.36.195 1.871.118.571-.085 1.758-.719 2.006-1.413.248-.694.248-1.289.173-1.413-.074-.124-.272-.198-.57-.347z"/><path d="M12 0C5.373 0 0 5.373 0 12c0 2.625.846 5.059 2.284 7.034L.789 23.492l4.627-1.475A11.932 11.932 0 0012 24c6.627 0 12-5.373 12-12S18.627 0 12 0zm0 21.818c-2.168 0-4.19-.581-5.938-1.593l-.424-.252-2.748.877.877-2.687-.276-.44A9.787 9.787 0 012.182 12c0-5.414 4.404-9.818 9.818-9.818S21.818 6.586 21.818 12s-4.404 9.818-9.818 9.818z"/></svg>'
+                        + 'Send on WhatsApp</a>';
+                }
+                if (!isWA && f.client_email) {
+                    html += '<button onclick="sendEmail(\\'' + f.id + '\\')" class="btn btn-email">Send Email</button>';
+                }
+                if (isWA) {
+                    html += '<button onclick="markSent(\\'' + f.id + '\\')" class="btn btn-done">Mark Sent</button>';
+                }
+                html += '<button onclick="skipFU(\\'' + f.id + '\\')" class="btn btn-skip">Skip</button>';
+                html += '<button onclick="snoozeFU(\\'' + f.id + '\\')" class="btn btn-snooze">Snooze 2d</button>';
+                html += '</div></div>';
+            });
+            html += '</div>';
         });
-        list.innerHTML = html;
+        c.innerHTML = html;
     }
 
     async function sendEmail(id) {
-        const msg = document.getElementById('msg-' + id).value;
         const el = document.getElementById('fu-' + id);
-        if (el) el.classList.add('loading');
+        if (el) el.classList.add('loading-overlay');
+        const msg = document.getElementById('msg-' + id).value;
         await fetch('/api/workflow/followups/' + id + '/send', {
-            method: 'POST',
-            headers: {'Content-Type': 'application/json'},
+            method: 'POST', headers: {'Content-Type': 'application/json'},
             body: JSON.stringify({ message: msg })
         });
-        if (el) el.style.opacity = '0.3';
-        setTimeout(() => loadFollowups(), 500);
+        followupsData = followupsData.filter(f => f.id !== id);
+        document.getElementById('followups-count').textContent = followupsData.length;
+        renderFollowups();
     }
 
     async function markSent(id) {
         const el = document.getElementById('fu-' + id);
-        if (el) el.classList.add('loading');
+        if (el) el.classList.add('loading-overlay');
         await fetch('/api/workflow/followups/' + id + '/send', {
-            method: 'POST',
-            headers: {'Content-Type': 'application/json'},
+            method: 'POST', headers: {'Content-Type': 'application/json'},
             body: JSON.stringify({})
         });
-        if (el) el.style.opacity = '0.3';
-        setTimeout(() => loadFollowups(), 500);
+        followupsData = followupsData.filter(f => f.id !== id);
+        document.getElementById('followups-count').textContent = followupsData.length;
+        renderFollowups();
     }
 
-    async function skipFollowup(id) {
+    async function skipFU(id) {
         const el = document.getElementById('fu-' + id);
-        if (el) el.classList.add('loading');
+        if (el) el.classList.add('loading-overlay');
         await fetch('/api/workflow/followups/' + id + '/skip', {
-            method: 'POST',
-            headers: {'Content-Type': 'application/json'},
+            method: 'POST', headers: {'Content-Type': 'application/json'},
             body: JSON.stringify({ reason: 'Skipped from dashboard' })
         });
-        if (el) el.style.opacity = '0.3';
-        setTimeout(() => loadFollowups(), 500);
+        followupsData = followupsData.filter(f => f.id !== id);
+        document.getElementById('followups-count').textContent = followupsData.length;
+        renderFollowups();
     }
 
-    async function snoozeFollowup(id) {
+    async function snoozeFU(id) {
         const el = document.getElementById('fu-' + id);
-        if (el) el.classList.add('loading');
+        if (el) el.classList.add('loading-overlay');
         await fetch('/api/workflow/followups/' + id + '/snooze', {
-            method: 'POST',
-            headers: {'Content-Type': 'application/json'},
+            method: 'POST', headers: {'Content-Type': 'application/json'},
             body: JSON.stringify({ days: 2 })
         });
-        if (el) el.style.opacity = '0.3';
-        setTimeout(() => loadFollowups(), 500);
+        followupsData = followupsData.filter(f => f.id !== id);
+        document.getElementById('followups-count').textContent = followupsData.length;
+        renderFollowups();
     }
 
-    // ── Load all ──
+    // ── Init ──
     function loadAll() { loadTasks(); loadFollowups(); }
     loadAll();
-    setInterval(loadAll, 60000); // refresh every minute
+    setInterval(loadAll, 60000);
     </script>
 </body>
 </html>"""
