@@ -467,22 +467,21 @@ def _require_workflow_auth():
 
 @app.route("/api/workflow/tasks", methods=["GET"])
 def api_workflow_tasks():
-    """Get today's action items from Notion Tasks DB."""
+    """Get action items from Notion Tasks DB with resolved contact names."""
     user = _require_workflow_auth()
     if not user:
         return jsonify({"error": "Unauthorized"}), 401
 
     import requests as req
-    from config import TASKS_DB_ID
+    from config import TASKS_DB_ID, NOTION_TOKEN
     from daily_lead_checker import get_task_field
+    from notion_helpers import get_contact_field
 
     today = datetime.now().strftime("%Y-%m-%d")
-    # Non-admin users are locked to their advisor
     advisor_filter = request.args.get("advisor")
     if user["role"] != "admin":
         advisor_filter = user["role"]
 
-    # Get all non-done tasks (overdue + due today + upcoming)
     filter_conds = [
         {"property": "Status", "select": {"does_not_equal": "Done"}}
     ]
@@ -491,17 +490,38 @@ def api_workflow_tasks():
 
     payload = {
         "filter": {"and": filter_conds},
-        "sorts": [
-            {"property": "Due Date", "direction": "ascending"}
-        ]
+        "sorts": [{"property": "Due Date", "direction": "ascending"}],
+        "page_size": 100
     }
-    headers = {
-        "Authorization": f"Bearer {os.environ.get('NOTION_TOKEN', '')}",
+    notion_headers = {
+        "Authorization": f"Bearer {NOTION_TOKEN}",
         "Content-Type": "application/json",
         "Notion-Version": "2022-06-28"
     }
     resp = req.post(f"https://api.notion.com/v1/databases/{TASKS_DB_ID}/query",
-                    headers=headers, json=payload)
+                    headers=notion_headers, json=payload)
+
+    # Resolve contact names from relation IDs (batch to avoid N+1)
+    contact_cache = {}
+
+    def resolve_contact_name(task_page):
+        rel = task_page.get("properties", {}).get("Contact", {}).get("relation", [])
+        if not rel:
+            return ""
+        cid = rel[0].get("id", "")
+        if cid in contact_cache:
+            return contact_cache[cid]
+        try:
+            cr = req.get(f"https://api.notion.com/v1/pages/{cid}", headers=notion_headers)
+            if cr.status_code == 200:
+                name = get_contact_field(cr.json(), "Name") or ""
+                contact_cache[cid] = name
+                return name
+        except Exception:
+            pass
+        contact_cache[cid] = ""
+        return ""
+
     tasks = []
     if resp.status_code == 200:
         for t in resp.json().get("results", []):
@@ -513,7 +533,7 @@ def api_workflow_tasks():
                 "status": get_task_field(t, "Status") or "",
                 "due_date": due,
                 "priority": get_task_field(t, "Priority") or "",
-                "contact_name": get_task_field(t, "Contact Name") or "",
+                "contact_name": resolve_contact_name(t),
                 "overdue": due < today if due else False,
                 "due_today": due == today if due else False,
             })

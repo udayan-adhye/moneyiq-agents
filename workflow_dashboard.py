@@ -264,22 +264,54 @@ WORKFLOW_HTML = """<!DOCTYPE html>
 
         let html = '';
         const sections = [
-            ['overdue', 'Overdue', 'overdue'],
             ['today', 'Due Today', 'today'],
             ['tomorrow', 'Tomorrow', ''],
             ['week', 'This Week', ''],
+            ['overdue', 'Overdue', 'overdue'],
             ['later', 'Later', '']
         ];
 
         sections.forEach(([key, label, cls]) => {
             if (!groups[key].length) return;
+            const isOverdue = key === 'overdue';
+            const collapsed = isOverdue && groups[key].length > 5;
             html += '<div class="section">'
-                + '<div class="section-header ' + cls + '">' + label
-                + '<span class="section-count">' + groups[key].length + '</span></div>';
+                + '<div class="section-header ' + cls + '" style="cursor:pointer" onclick="toggleSection(\\'' + key + '\\')">'
+                + '<span>' + (collapsed ? '&#9654; ' : '&#9660; ') + label + '</span>'
+                + '<span class="section-count">' + groups[key].length + '</span>';
+            if (isOverdue) {
+                html += '<button class="btn btn-skip" style="margin-left:auto;font-size:11px;padding:3px 8px" '
+                    + 'onclick="event.stopPropagation();markAllDone(\\'' + key + '\\')">Clear all</button>';
+            }
+            html += '</div>'
+                + '<div id="section-' + key + '" style="' + (collapsed ? 'display:none' : '') + '">';
             groups[key].forEach(t => { html += taskCard(t, true); });
-            html += '</div>';
+            html += '</div></div>';
         });
         c.innerHTML = html;
+    }
+
+    function toggleSection(key) {
+        const el = document.getElementById('section-' + key);
+        if (el) el.style.display = el.style.display === 'none' ? '' : 'none';
+    }
+
+    async function markAllDone(key) {
+        if (!confirm('Mark all ' + key + ' tasks as done?')) return;
+        const today = new Date(); today.setHours(0,0,0,0);
+        const toComplete = tasksData.filter(t => {
+            if (!t.due_date) return key === 'later';
+            const diff = Math.round((new Date(t.due_date + 'T00:00:00') - today) / 86400000);
+            if (key === 'overdue') return diff < 0;
+            if (key === 'today') return diff === 0;
+            return false;
+        });
+        for (const t of toComplete) {
+            await fetch('/api/workflow/tasks/' + t.id + '/complete', { method: 'POST' });
+        }
+        tasksData = tasksData.filter(t => !toComplete.find(c => c.id === t.id));
+        document.getElementById('tasks-count').textContent = tasksData.length;
+        renderTasks();
     }
 
     function renderTasksByClient(c) {
@@ -290,12 +322,25 @@ WORKFLOW_HTML = """<!DOCTYPE html>
             grouped[k].push(t);
         });
 
+        // Sort clients: those with overdue tasks first
+        const today = new Date(); today.setHours(0,0,0,0);
+        const clientKeys = Object.keys(grouped).sort((a, b) => {
+            const aOverdue = grouped[a].some(t => t.due_date && new Date(t.due_date + 'T00:00:00') < today);
+            const bOverdue = grouped[b].some(t => t.due_date && new Date(t.due_date + 'T00:00:00') < today);
+            if (aOverdue && !bOverdue) return -1;
+            if (!aOverdue && bOverdue) return 1;
+            return a.localeCompare(b);
+        });
+
         let html = '';
-        Object.keys(grouped).sort().forEach(client => {
+        clientKeys.forEach(client => {
             const items = grouped[client];
+            const overdueCount = items.filter(t => t.overdue).length;
             html += '<div class="section">'
                 + '<div class="section-header">' + esc(client)
-                + '<span class="section-count">' + items.length + '</span></div>';
+                + '<span class="section-count">' + items.length + '</span>'
+                + (overdueCount ? '<span class="pill pill-overdue" style="margin-left:4px">' + overdueCount + ' overdue</span>' : '')
+                + '</div>';
             items.sort((a, b) => (a.due_date || 'z').localeCompare(b.due_date || 'z'));
             items.forEach(t => { html += taskCard(t, false); });
             html += '</div>';
