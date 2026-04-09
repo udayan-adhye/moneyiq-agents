@@ -68,7 +68,9 @@ def _load_creds_from_env(advisor_email):
 
     try:
         token_data = json.loads(token_json)
-        creds = Credentials.from_authorized_user_info(token_data, SCOPES)
+        # Don't pass SCOPES — accept whatever scopes the token was authorized with
+        # This prevents scope mismatch when new scopes are added to SCOPES list
+        creds = Credentials.from_authorized_user_info(token_data)
         print(f"  Loaded Gmail token from environment variable ({env_var})")
         return creds
     except Exception as e:
@@ -110,7 +112,7 @@ def get_gmail_service(advisor_email=None):
 
     # Try 1: Load from token file on disk
     if os.path.exists(token_file):
-        creds = Credentials.from_authorized_user_file(token_file, SCOPES)
+        creds = Credentials.from_authorized_user_file(token_file)
 
     # Try 2: Load from environment variable (Railway)
     if not creds:
