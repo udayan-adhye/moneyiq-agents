@@ -14,7 +14,7 @@ REQUIREMENTS:
   pip3 install flask requests anthropic
 """
 
-from flask import Flask, request, jsonify, Response
+from flask import Flask, request, jsonify, Response, session, redirect, url_for
 import threading
 import json
 import os
@@ -34,11 +34,29 @@ from activity_log import (
 )
 
 app = Flask(__name__)
+app.secret_key = os.environ.get("FLASK_SECRET_KEY", "moneyiq-workflow-secret-2026")
 
 # Simple auth token to protect cron endpoints (set this in env vars)
 CRON_SECRET = os.environ.get("CRON_SECRET", "moneyiq-cron-2024")
 # Optional: protect dashboard with a password
 DASHBOARD_PASSWORD = os.environ.get("DASHBOARD_PASSWORD", "")
+
+# Workflow login users: "username:password:role" — role is "admin" (sees all) or advisor name
+# Format: WORKFLOW_USERS=udayan:pass123:admin,rishabh:pass456:Rishabh Mishra
+_raw_users = os.environ.get("WORKFLOW_USERS", "udayan:moneyiq123:admin,rishabh:moneyiq123:Rishabh Mishra")
+WORKFLOW_USERS = {}
+for entry in _raw_users.split(","):
+    parts = entry.strip().split(":", 2)
+    if len(parts) == 3:
+        WORKFLOW_USERS[parts[0]] = {"password": parts[1], "role": parts[2]}
+
+
+def get_workflow_user():
+    """Check if user is logged in to the workflow dashboard. Returns user dict or None."""
+    username = session.get("workflow_user")
+    if username and username in WORKFLOW_USERS:
+        return {"username": username, **WORKFLOW_USERS[username]}
+    return None
 
 # Scheduled poll times in IST (24h format) — only check Fireflies at these hours
 # 10:00 AM IST = catch any overnight transcripts before the day starts
@@ -436,18 +454,33 @@ def cron_call_review():
 
 
 # ══════════════════════════════════════════════
-# WORKFLOW DASHBOARD API
+# WORKFLOW DASHBOARD API (session-protected)
 # ══════════════════════════════════════════════
+
+def _require_workflow_auth():
+    """Returns user dict if authenticated, or a 401 response."""
+    user = get_workflow_user()
+    if not user:
+        return None
+    return user
+
 
 @app.route("/api/workflow/tasks", methods=["GET"])
 def api_workflow_tasks():
     """Get today's action items from Notion Tasks DB."""
+    user = _require_workflow_auth()
+    if not user:
+        return jsonify({"error": "Unauthorized"}), 401
+
     import requests as req
     from config import TASKS_DB_ID
     from daily_lead_checker import get_task_field
 
     today = datetime.now().strftime("%Y-%m-%d")
+    # Non-admin users are locked to their advisor
     advisor_filter = request.args.get("advisor")
+    if user["role"] != "admin":
+        advisor_filter = user["role"]
 
     # Get all non-done tasks (overdue + due today + upcoming)
     filter_conds = [
@@ -505,8 +538,14 @@ def api_complete_task(task_id):
 @app.route("/api/workflow/followups", methods=["GET"])
 def api_workflow_followups():
     """Get pending/ready follow-ups for the dashboard."""
+    user = _require_workflow_auth()
+    if not user:
+        return jsonify({"error": "Unauthorized"}), 401
+
     from followup_manager import get_dashboard_followups, get_todays_followups
     advisor = request.args.get("advisor")
+    if user["role"] != "admin":
+        advisor = user["role"]
 
     # First get Ready items (processed by daily checker)
     items = get_dashboard_followups(advisor)
@@ -1244,18 +1283,74 @@ def dashboard():
 
 
 # ══════════════════════════════════════════════
-# WORKFLOW DASHBOARD
+# WORKFLOW LOGIN + DASHBOARD
 # ══════════════════════════════════════════════
+
+WORKFLOW_LOGIN_HTML = """<!DOCTYPE html>
+<html><head>
+<meta charset="UTF-8"><meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>MoneyIQ - Login</title>
+<style>
+body { font-family: -apple-system, sans-serif; background: #f8fafc; display: flex; align-items: center; justify-content: center; min-height: 100vh; margin: 0; }
+.login-box { background: white; padding: 40px; border-radius: 16px; box-shadow: 0 4px 24px rgba(0,0,0,0.08); width: 340px; }
+h1 { font-size: 20px; margin: 0 0 8px; color: #1e293b; }
+p { font-size: 13px; color: #94a3b8; margin: 0 0 24px; }
+label { font-size: 13px; color: #475569; font-weight: 500; display: block; margin-bottom: 4px; }
+input { width: 100%; padding: 10px 12px; border: 1px solid #e2e8f0; border-radius: 8px; font-size: 14px; margin-bottom: 16px; box-sizing: border-box; }
+input:focus { outline: none; border-color: #2563eb; box-shadow: 0 0 0 3px rgba(37,99,235,0.1); }
+button { width: 100%; padding: 10px; background: #2563eb; color: white; border: none; border-radius: 8px; font-size: 14px; font-weight: 600; cursor: pointer; }
+button:hover { background: #1d4ed8; }
+.error { color: #dc2626; font-size: 13px; margin-bottom: 12px; }
+</style></head><body>
+<div class="login-box">
+<h1>MoneyIQ Workflow</h1>
+<p>Sign in to access your dashboard</p>
+{error}
+<form method="POST" action="/workflow/login">
+<label>Username</label><input name="username" autofocus required>
+<label>Password</label><input name="password" type="password" required>
+<button type="submit">Sign In</button>
+</form></div></body></html>"""
+
+
+@app.route("/workflow/login", methods=["GET", "POST"])
+def workflow_login():
+    if request.method == "GET":
+        return WORKFLOW_LOGIN_HTML.replace("{error}", "")
+
+    username = request.form.get("username", "").strip().lower()
+    password = request.form.get("password", "")
+
+    user = WORKFLOW_USERS.get(username)
+    if user and user["password"] == password:
+        session["workflow_user"] = username
+        return redirect("/workflow")
+
+    return WORKFLOW_LOGIN_HTML.replace("{error}", '<div class="error">Invalid username or password</div>')
+
+
+@app.route("/workflow/logout")
+def workflow_logout():
+    session.pop("workflow_user", None)
+    return redirect("/workflow/login")
+
 
 @app.route("/workflow", methods=["GET"])
 def workflow_dashboard():
-    """Clean workflow interface — action items + follow-up queue."""
-    if DASHBOARD_PASSWORD:
-        pwd = request.args.get("pwd", "")
-        if pwd != DASHBOARD_PASSWORD:
-            return "<h2>Enter password: /workflow?pwd=YOUR_PASSWORD</h2>", 401
+    """Clean workflow interface — login required, role-based filtering."""
+    user = get_workflow_user()
+    if not user:
+        return redirect("/workflow/login")
+
     from workflow_dashboard import WORKFLOW_HTML
-    return WORKFLOW_HTML
+
+    # Inject user info into the HTML so JS can filter by role
+    user_json = json.dumps({"username": user["username"], "role": user["role"]})
+    injected = WORKFLOW_HTML.replace(
+        "let currentTab = 'tasks';",
+        f"const CURRENT_USER = {user_json};\n    let currentTab = 'tasks';"
+    )
+    return injected
 
 
 # ══════════════════════════════════════════════

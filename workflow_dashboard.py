@@ -46,11 +46,14 @@ WORKFLOW_HTML = """<!DOCTYPE html>
         <div class="max-w-3xl mx-auto px-4 py-3">
             <div class="flex items-center justify-between mb-3">
                 <h1 class="text-lg font-bold text-gray-900">MoneyIQ Workflow</h1>
-                <select id="advisorFilter" onchange="loadAll()" class="text-sm border rounded-lg px-3 py-1.5 bg-white">
-                    <option value="">All Advisors</option>
-                    <option value="Udayan Adhye">Udayan</option>
-                    <option value="Rishabh Mishra">Rishabh</option>
-                </select>
+                <div class="flex items-center gap-3">
+                    <select id="advisorFilter" onchange="loadAll()" class="text-sm border rounded-lg px-3 py-1.5 bg-white">
+                        <option value="">All Advisors</option>
+                        <option value="Udayan Adhye">Udayan</option>
+                        <option value="Rishabh Mishra">Rishabh</option>
+                    </select>
+                    <a href="/workflow/logout" class="text-xs text-gray-400 hover:text-red-500">Logout</a>
+                </div>
             </div>
             <!-- Tabs -->
             <div class="flex gap-6">
@@ -93,7 +96,19 @@ WORKFLOW_HTML = """<!DOCTYPE html>
         document.getElementById('tab-followups').className = 'pb-2 text-sm ' + (tab === 'followups' ? 'tab-active' : 'tab-inactive');
     }
 
+    // Role-based filtering: non-admin users can only see their own data
+    // CURRENT_USER is injected by the server (e.g. {username: "rishabh", role: "Rishabh Mishra"})
+    const isAdmin = typeof CURRENT_USER !== 'undefined' && CURRENT_USER.role === 'admin';
+    if (typeof CURRENT_USER !== 'undefined' && !isAdmin) {
+        // Lock filter to their advisor name
+        const sel = document.getElementById('advisorFilter');
+        sel.value = CURRENT_USER.role;
+        sel.disabled = true;
+        sel.style.opacity = '0.6';
+    }
+
     function getAdvisor() {
+        if (typeof CURRENT_USER !== 'undefined' && !isAdmin) return CURRENT_USER.role;
         return document.getElementById('advisorFilter').value;
     }
 
