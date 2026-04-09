@@ -242,7 +242,8 @@ def meeting_already_processed(transcript_id):
 def create_meeting(title, contact_page_id, meeting_date, advisor,
                    meeting_number, fireflies_link=None, summary=None,
                    action_items=None, insurance_flagged=False,
-                   ca_intro_flagged=False, quality_score=None):
+                   ca_intro_flagged=False, quality_score=None,
+                   meeting_type=None):
     url = f"{BASE_URL}/pages"
     properties = {
         "Meeting Title": {"title": [{"text": {"content": title}}]},
@@ -262,6 +263,8 @@ def create_meeting(title, contact_page_id, meeting_date, advisor,
         properties["Action Items"] = {"rich_text": [{"text": {"content": action_items[:2000]}}]}
     if quality_score:
         properties["Meeting Quality Score"] = {"select": {"name": quality_score}}
+    if meeting_type:
+        properties["Meeting Type"] = {"select": {"name": meeting_type.capitalize()}}
 
     payload = {
         "parent": {"database_id": MEETINGS_DB_ID},
