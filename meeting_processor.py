@@ -533,6 +533,19 @@ def process_single_meeting(transcript_id, duration_hint=None):
     client_email = get_contact_field(contact, "Email") if contact else None
     client_phone_from_crm = get_contact_field(contact, "WhatsApp Number") if contact else None
 
+    # Save to Google Contacts (name shows in WhatsApp)
+    if client_phone_from_crm or client_email:
+        try:
+            from google_contacts_helpers import save_to_google_contacts
+            save_to_google_contacts(
+                name=client_name,
+                phone=client_phone_from_crm,
+                email=client_email,
+                advisor_email=advisor_email
+            )
+        except Exception as e:
+            print(f"  ⚠️ Google Contacts save failed: {e}")
+
     # Fallback: try to find email from Fireflies participants
     if not client_email:
         for p in participants:

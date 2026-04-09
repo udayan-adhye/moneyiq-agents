@@ -157,6 +157,23 @@ def process_single_booking(event):
         update_contact(contact_id, updates)
         print(f"  ✅ Contact updated with all Calendly data")
 
+        # Save to Google Contacts (shows name in WhatsApp)
+        try:
+            from google_contacts_helpers import save_to_google_contacts
+            advisor_email = None
+            for adv in ADVISORS.values():
+                if adv["name"] == advisor_name:
+                    advisor_email = adv["email"]
+                    break
+            save_to_google_contacts(
+                name=client_name,
+                phone=crm_data.get("whatsapp_number"),
+                email=client_email,
+                advisor_email=advisor_email
+            )
+        except Exception as e:
+            print(f"  ⚠️ Google Contacts save failed: {e}")
+
         # Print summary
         print(f"\n  📊 LEAD QUALIFICATION SUMMARY:")
         print(f"     Timeline: {crm_data.get('investing_timeline', 'N/A')}")
