@@ -11,8 +11,13 @@ REQUIREMENTS:
 """
 
 import json
+import threading
 from datetime import datetime, date, timedelta
 from anthropic import Anthropic
+
+# In-memory lock per transcript ID to prevent concurrent processing
+_processing_transcripts = set()
+_processing_lock = threading.Lock()
 
 from config import (
     CLAUDE_API_KEY, ADVISORS, INSURANCE_TEAM_EMAIL,
@@ -314,6 +319,22 @@ def process_single_meeting(transcript_id, duration_hint=None):
     print(f"  Processing transcript: {transcript_id}")
     print(f"{'='*60}")
 
+    # Step 0: In-memory dedup lock (prevents race condition between webhook + scheduler)
+    with _processing_lock:
+        if transcript_id in _processing_transcripts:
+            print(f"  ⏭️  Already being processed by another thread. Skipping.")
+            return None
+        _processing_transcripts.add(transcript_id)
+
+    try:
+        return _process_single_meeting_inner(transcript_id, duration_hint)
+    finally:
+        # Keep in set permanently — once processed, never reprocess
+        pass
+
+
+def _process_single_meeting_inner(transcript_id, duration_hint=None):
+    """Inner processing logic (called from process_single_meeting with dedup lock)."""
     # Step 0a: Quick duration pre-filter (skip missed calls and very short meetings)
     MIN_MEETING_DURATION_MINUTES = 10
     if duration_hint is not None and duration_hint < MIN_MEETING_DURATION_MINUTES:

@@ -399,56 +399,11 @@ def run_daily_lead_checker():
     print(f"  Possible no-shows:   {len(no_shows)}")
     print(f"  Overdue tasks:       {len(overdue_tasks)}")
 
-    # Draft nudge emails for stale leads
+    # Nudge emails DISABLED — follow-ups are now handled by the
+    # workflow dashboard + followup_manager sequence system.
+    # The daily lead checker only generates the summary report.
     drafts_saved = 0
-    for lead in stale_leads:
-        if lead.get("email"):
-            print(f"\n  ✍️  Drafting nudge email for {lead['name']}...")
-            email_body = draft_nudge_email(lead, nudge_type="follow_up")
-            if email_body:
-                advisor_email = None
-                for adv in ADVISORS.values():
-                    if adv["name"] == lead.get("advisor"):
-                        advisor_email = adv["email"]
-                        break
-                advisor_email = advisor_email or list(ADVISORS.values())[0]["email"]
-                advisor_name = lead.get("advisor", list(ADVISORS.values())[0]["name"])
-
-                save_draft(
-                    sender=f"{advisor_name} <{advisor_email}>",
-                    to=lead["email"],
-                    subject=f"Quick check-in  - {advisor_name}",
-                    body=email_body
-                )
-                # Mark as nudged to prevent duplicate drafts
-                update_contact(lead["id"], {"Last Nudge Date": date.today().isoformat()})
-                drafts_saved += 1
-
-    # Draft nudge emails for no-shows
-    for lead in no_shows:
-        if lead.get("email"):
-            print(f"\n  ✍️  Drafting reschedule nudge for {lead['name']}...")
-            email_body = draft_nudge_email(lead, nudge_type="no_show")
-            if email_body:
-                advisor_email = None
-                for adv in ADVISORS.values():
-                    if adv["name"] == lead.get("advisor"):
-                        advisor_email = adv["email"]
-                        break
-                advisor_email = advisor_email or list(ADVISORS.values())[0]["email"]
-                advisor_name = lead.get("advisor", list(ADVISORS.values())[0]["name"])
-
-                save_draft(
-                    sender=f"{advisor_name} <{advisor_email}>",
-                    to=lead["email"],
-                    subject=f"Missed our call? Happy to reschedule  - {advisor_name}",
-                    body=email_body
-                )
-                # Mark as nudged to prevent duplicate drafts
-                update_contact(lead["id"], {"Last Nudge Date": date.today().isoformat()})
-                drafts_saved += 1
-
-    print(f"\n  📧 Saved {drafts_saved} draft email(s)")
+    print(f"\n  📧 Nudge drafts disabled (handled by workflow dashboard)")
 
     # Build and send daily report to Udayan
     report = build_daily_report(stale_leads, no_shows, overdue_tasks)
