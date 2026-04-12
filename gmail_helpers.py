@@ -118,39 +118,38 @@ def get_gmail_service(advisor_email=None):
     if not creds:
         creds = _load_creds_from_env(advisor_email)
 
-    # If no token or it's expired, try to refresh
-    if not creds or not creds.valid:
-        if creds and creds.expired and creds.refresh_token:
+    # If we have creds with a refresh token, always try to refresh if expired
+    if creds and creds.refresh_token and (not creds.valid or creds.expired):
+        try:
+            creds.refresh(Request())
+            print(f"  Token refreshed for {advisor_email or 'default'}")
             try:
-                creds.refresh(Request())
-                # Save refreshed token back to file if possible
-                try:
-                    with open(token_file, "w") as f:
-                        f.write(creds.to_json())
-                except (IOError, OSError):
-                    pass  # On Railway, filesystem may be read-only
-            except Exception as e:
-                print(f"  Failed to refresh token: {e}")
-                return None
-        elif not creds:
-            # No token at all - check if we can do initial auth (local only)
-            if os.path.exists(GMAIL_CREDENTIALS_FILE):
-                flow = InstalledAppFlow.from_client_secrets_file(
-                    GMAIL_CREDENTIALS_FILE, SCOPES
-                )
-                creds = flow.run_local_server(port=0)
-                with open(token_file, "w") as token:
-                    token.write(creds.to_json())
+                with open(token_file, "w") as f:
+                    f.write(creds.to_json())
+            except (IOError, OSError):
+                pass  # On Railway, filesystem may be read-only
+        except Exception as e:
+            print(f"  Failed to refresh token: {e}")
+            return None
+
+    # If still no valid creds, try initial auth (local only)
+    if not creds or not creds.valid:
+        if os.path.exists(GMAIL_CREDENTIALS_FILE):
+            flow = InstalledAppFlow.from_client_secrets_file(
+                GMAIL_CREDENTIALS_FILE, SCOPES
+            )
+            creds = flow.run_local_server(port=0)
+            with open(token_file, "w") as token:
+                token.write(creds.to_json())
+        else:
+            creds_data = _load_credentials_json_from_env()
+            if creds_data:
+                print("  Gmail credentials found in env but cannot run OAuth flow on server.")
+                print("  Please authorize locally first, then set GMAIL_TOKEN env vars.")
             else:
-                # Check env var for credentials
-                creds_data = _load_credentials_json_from_env()
-                if creds_data:
-                    print("  Gmail credentials found in env but cannot run OAuth flow on server.")
-                    print("  Please authorize locally first, then set GMAIL_TOKEN env vars.")
-                else:
-                    print(f"  Missing {GMAIL_CREDENTIALS_FILE}")
-                    print(f"     Follow GMAIL_SETUP_GUIDE.md to create it.")
-                return None
+                print(f"  Missing {GMAIL_CREDENTIALS_FILE}")
+                print(f"     Follow GMAIL_SETUP_GUIDE.md to create it.")
+            return None
 
     service = build("gmail", "v1", credentials=creds)
     _gmail_services[token_file] = service
