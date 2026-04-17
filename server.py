@@ -59,9 +59,9 @@ def get_workflow_user():
     return None
 
 # Scheduled poll times in IST (24h format) — only check Fireflies at these hours
-# 10:00 AM IST = catch any overnight transcripts before the day starts
-# 8:00 PM IST = catch all daytime meetings after the last usual call
-POLL_HOURS_IST = [int(h) for h in os.environ.get("POLL_HOURS_IST", "10,20").split(",")]
+# Hourly polls during business hours (10 AM - 10 PM IST) to catch transcripts
+# as Fireflies finishes processing them. Webhook is primary, polling is backup.
+POLL_HOURS_IST = [int(h) for h in os.environ.get("POLL_HOURS_IST", "10,12,14,16,18,20,22").split(",")]
 
 # Hour (IST) to run the meeting prep agent each morning
 MEETING_PREP_HOUR_IST = int(os.environ.get("MEETING_PREP_HOUR_IST", 7))
