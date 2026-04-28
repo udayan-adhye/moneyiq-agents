@@ -64,7 +64,7 @@ def analyze_meeting_with_claude(transcript_text, advisor_name, client_name, exis
     ca_instruction = (
         f"If CA introduction needed, draft a warm introduction email. "
         f"Follow this EXACT tone and structure (this is how the advisor actually writes):\n\n"
-        f"Hi Asmeet, hi [Client first name],\n\n"
+        f"Hi Asmeet, and[Client first name],\n\n"
         f"Connecting you both.\n\n"
         f"Asmeet, [Client first name] and I had a conversation today, and [he/she] mentioned needing help with [specific topic from meeting  - taxes, ITR filing, capital gains, HUF structuring, etc.].\n\n"
         f"[Client first name], Asmeet is my trusted CA. I work with him and have been very happy with our work. He will be able to guide you on the best approach.\n\n"
@@ -158,6 +158,7 @@ Analyze the following transcript and return a JSON object with these exact keys:
 
   "client_financial_goals": "Brief summary of financial goals discussed",
   "investment_amount_discussed": null or number in rupees,
+  "client_phone": "Client's phone/WhatsApp number if mentioned anywhere in the conversation, including emails read aloud. Format with country code (+91...). null if not mentioned.",
 
   "follow_up_email_subject": "A short, specific email subject line based on meeting_type. For discovery: MUST start with 'Our investment call today' + specific topic. For recommendations: 'Your investment plan next steps' + specific topic. For review: 'Portfolio review update' + specific topic. NEVER use generic phrases like 'wealth plan', 'financial plan'. Keep under 60 characters.",
 
@@ -474,6 +475,14 @@ def _process_single_meeting_inner(transcript_id, duration_hint=None):
     if analysis.get("investment_amount_discussed"):
         contact_updates["Investment Amount"] = analysis["investment_amount_discussed"]
 
+    # Backfill WhatsApp number from Claude analysis if Notion doesn't have one
+    if not get_contact_field(contact, "WhatsApp Number"):
+        hv_phone = analysis.get("high_value_client", {}).get("client_phone", "")
+        analysis_phone = analysis.get("client_phone", "")
+        new_phone = hv_phone or analysis_phone
+        if new_phone:
+            contact_updates["WhatsApp Number"] = new_phone
+
     # Family/psych/context/closing — overwrite with merged version Claude returned
     for fld_key, fld_name in [
         ("family_details", "Family Details"),
@@ -562,7 +571,11 @@ def _process_single_meeting_inner(transcript_id, duration_hint=None):
 
     # Find client email and phone  - prefer Notion (from Calendly) over transcript
     client_email = get_contact_field(contact, "Email") if contact else None
-    client_phone_from_crm = get_contact_field(contact, "WhatsApp Number") if contact else None
+    # If we just backfilled the phone in contact_updates, use that value (contact obj is stale)
+    client_phone_from_crm = (
+        contact_updates.get("WhatsApp Number")
+        or (get_contact_field(contact, "WhatsApp Number") if contact else None)
+    )
 
     # Save to Google Contacts (name shows in WhatsApp)
     if client_phone_from_crm or client_email:
