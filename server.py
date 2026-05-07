@@ -27,6 +27,7 @@ from calendly_intake import run_calendly_intake
 from daily_lead_checker import run_daily_lead_checker
 from advisor_call_review import run_call_review
 from meeting_prep import run_meeting_prep
+from calendly_cap import enforce_cap_all_advisors
 from config import ADVISORS
 from activity_log import (
     log_agent_start, log_agent_complete, log_agent_error,
@@ -85,12 +86,14 @@ def meeting_check_loop():
     """Background thread that runs scheduled tasks at IST times.
     - Fireflies polling at 10 AM and 8 PM IST
     - Meeting prep agent at 7 AM IST
+    - Calendly appointment-cap enforcer every 15 minutes
     Webhook handles real-time meeting processing; polling is the safety net."""
     time.sleep(60)
-    print(f"\n  SCHEDULER: Loop started (Fireflies poll {POLL_HOURS_IST} IST, prep {MEETING_PREP_HOUR_IST} IST)")
+    print(f"\n  SCHEDULER: Loop started (Fireflies poll {POLL_HOURS_IST} IST, prep {MEETING_PREP_HOUR_IST} IST, cap every 15m)")
 
     last_poll_date_hour = None
     last_prep_date = None
+    last_cap_run = None
 
     while True:
         ist_now = _get_ist_now()
@@ -123,6 +126,15 @@ def meeting_check_loop():
             except Exception as e:
                 print(f"  SCHEDULER ERROR (prep): {e}")
                 log_agent_error("meeting_prep", str(e))
+
+        # Calendly cap enforcer — every 15 minutes
+        if last_cap_run is None or (ist_now - last_cap_run) >= timedelta(minutes=15):
+            try:
+                logged_enforce_calendly_cap()
+                last_cap_run = ist_now
+            except Exception as e:
+                print(f"  SCHEDULER ERROR (calendly_cap): {e}")
+                log_agent_error("calendly_cap", str(e))
 
         # Check every 5 minutes if it's time to run anything
         time.sleep(300)
@@ -230,6 +242,24 @@ def logged_run_call_review(days_back):
     try:
         run_call_review(days_back)
         log_agent_complete(agent, {"days_back": days_back})
+    except Exception as e:
+        log_agent_error(agent, str(e))
+        raise
+
+
+def logged_enforce_calendly_cap(max_per_day=4, days_ahead=30):
+    """Wrap calendly cap enforcer with activity logging."""
+    agent = "calendly_cap"
+    log_agent_start(agent)
+    try:
+        results = enforce_cap_all_advisors(max_per_day=max_per_day, days_ahead=days_ahead)
+        added = sum(r.get("blocks_added", 0) for r in results)
+        removed = sum(r.get("blocks_removed", 0) for r in results)
+        log_agent_complete(agent, {
+            "blocks_added": added,
+            "blocks_removed": removed,
+            "results": results,
+        })
     except Exception as e:
         log_agent_error(agent, str(e))
         raise
@@ -451,6 +481,26 @@ def cron_call_review():
     thread = threading.Thread(target=logged_run_call_review, args=(days,))
     thread.start()
     return jsonify({"status": "processing", "agent": "call_review", "days": days})
+
+
+@app.route("/cron/calendly-cap", methods=["GET", "POST"])
+def cron_calendly_cap():
+    """Scheduled: enforce per-day Calendly appointment cap by placing
+    busy blocks on days that have already hit the cap."""
+    if not check_cron_auth():
+        return jsonify({"error": "Unauthorized"}), 401
+
+    max_per_day = request.args.get("max", 4, type=int)
+    days_ahead = request.args.get("days", 30, type=int)
+    print(f"\n  CRON: Calendly cap (max={max_per_day}/day, horizon={days_ahead}d)")
+    results = enforce_cap_all_advisors(max_per_day=max_per_day, days_ahead=days_ahead)
+    return jsonify({
+        "status": "ok",
+        "agent": "calendly_cap",
+        "max_per_day": max_per_day,
+        "days_ahead": days_ahead,
+        "results": results,
+    })
 
 
 # ══════════════════════════════════════════════
