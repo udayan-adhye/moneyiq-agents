@@ -256,6 +256,21 @@ def save_draft(sender, to, subject, body, cc=None, advisor_email=None, attachmen
         print(f"     → Check if GMAIL_TOKEN env var is set for this advisor on Railway")
         token_var = TOKEN_ENV_VARS.get(advisor_email.lower(), "UNKNOWN") if advisor_email else "UNKNOWN"
         print(f"     → Expected env var: {token_var}")
+        # Fallback: save draft to Udayan's account so it's not lost
+        # The fallback draft will be addressed but in Udayan's drafts folder
+        fallback_email = "udayan@withmoneyiq.com"
+        if advisor_email and advisor_email.lower() != fallback_email:
+            print(f"     → Falling back to {fallback_email}'s drafts")
+            fallback_service = get_gmail_service(fallback_email)
+            if fallback_service:
+                # Recursive call with fallback email
+                return save_draft(
+                    sender=sender, to=to,
+                    subject=f"[FOR {advisor_email}] {subject}",
+                    body=body, cc=cc,
+                    advisor_email=fallback_email,
+                    attachments=attachments
+                )
         return None
 
     # Convert plain text body to simple HTML
